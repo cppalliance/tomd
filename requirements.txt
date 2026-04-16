@@ -1,0 +1,10 @@
+# Runtime dependencies for tomd. Pinned to compatible-release (~=) ranges
+# to protect against PyMuPDF API drift (tomd uses get_text "dict"/"rawdict",
+# get_texttrace, and get_drawings, any of which can shift between minor
+# versions) and to bound BeautifulSoup API changes.
+#
+# Bump these pins intentionally after running the full test suite against
+# the new version.
+
+pymupdf~=1.27.0
+beautifulsoup4~=4.14.0

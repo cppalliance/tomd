@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tomd"
+version = "0.1.0"
+description = "PDF and HTML to Markdown converter for WG21 papers."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "BSL-1.0"}
+authors = [
+  {name = "Vinnie Falco"},
+]
+dependencies = [
+  "pymupdf~=1.27.0",
+  "beautifulsoup4~=4.14.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest~=8.0",
+]
+
+[project.scripts]
+tomd = "tomd.main:main"
+
+[tool.setuptools]
+packages = ["tomd", "tomd.lib", "tomd.lib.pdf", "tomd.lib.html"]
+
+[tool.setuptools.package-dir]
+"tomd" = "."
