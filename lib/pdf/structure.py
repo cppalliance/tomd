@@ -18,6 +18,13 @@ from .types import (
 _HEADING_SIZE_RATIO = 1.05
 _TITLE_SIZE_RATIO = 1.2
 
+# Max words in a heading's first physical line. Beyond this the line is
+# prose, not a title. Numbered spec clauses ("1 A fiber is a single flow
+# of control...") and numeric arithmetic results that happen to start a
+# continuation line both trigger SECTION_NUM_RE; this length cap rejects
+# them downstream. Real WG21 section titles are 1-8 words.
+_HEADING_MAX_WORDS = 12
+
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _EMAIL_INLINE_RE = re.compile(r"\S+@\S+\.\S+")
 _MULTI_SPACE_RE = re.compile(r"\s{2,}")
@@ -408,7 +415,9 @@ def structure_sections(sections: list[Section],
             level, conf = heading_confidence(
                 has_number, number_level, font_level, is_bold, is_known)
 
-            if level > 0:
+            is_prose_length = len(first_line.split()) > _HEADING_MAX_WORDS
+            prose_on_weak_signal = is_prose_length and conf == Confidence.LOW
+            if level > 0 and not prose_on_weak_signal:
                 sec.kind = SectionKind.HEADING
                 sec.heading_level = level
                 sec.confidence = conf
