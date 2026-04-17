@@ -116,7 +116,15 @@ def convert_pdf(path: Path) -> tuple[str, str | None]:
             mupdf_blocks = extract_mupdf(page, pg_num)
             spatial_blocks = extract_spatial(page, pg_num)
 
-            edge_items = get_edge_items(mupdf_blocks, pg_num, page_height)
+            # Collect edges from both paths: MuPDF splits left/center/right
+            # headers into separate lines on wide horizontal gaps; spatial
+            # merges them into one line. Patterns from both forms are needed
+            # so strip_repeating (which does exact text match) can match
+            # against either path's segmentation.
+            edge_items = (
+                get_edge_items(mupdf_blocks, pg_num, page_height)
+                + get_edge_items(spatial_blocks, pg_num, page_height)
+            )
             all_edge_items.append(edge_items)
 
             links = collect_links(page)
