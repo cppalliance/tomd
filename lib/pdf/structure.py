@@ -179,17 +179,40 @@ def compare_extractions(mupdf_blocks: list[Block],
     return sections
 
 
+_BODY_PROSE_MIN_CHARS = 500
+_BODY_PROSE_MIN_FRACTION = 0.10
+
+
 def _detect_body_size(sections: list[Section]) -> float:
-    """Find the most common font size across all sections (= body text)."""
-    sizes: Counter[float] = Counter()
+    """Find the most common font size that represents body text.
+
+    Prefers prose (non-monospace) spans so that code-heavy papers don't
+    bias the body size toward the smaller code font. Falls back to the
+    overall most common size when prose is insufficient (e.g. wording
+    papers that are nearly entirely monospace specification text), since
+    in those papers the spec font *is* the body font.
+    """
+    prose_sizes: Counter[float] = Counter()
+    all_sizes: Counter[float] = Counter()
     for sec in sections:
         for line in sec.lines:
             for span in line.spans:
-                if span.text.strip():
-                    sizes[span.font_size] += len(span.text)
-    if not sizes:
+                if not span.text.strip():
+                    continue
+                all_sizes[span.font_size] += len(span.text)
+                if not span.monospace:
+                    prose_sizes[span.font_size] += len(span.text)
+
+    prose_total = sum(prose_sizes.values())
+    all_total = sum(all_sizes.values())
+    prose_sufficient = (
+        prose_total >= _BODY_PROSE_MIN_CHARS
+        and (all_total == 0 or prose_total >= _BODY_PROSE_MIN_FRACTION * all_total)
+    )
+    source = prose_sizes if prose_sufficient else all_sizes
+    if not source:
         return FALLBACK_BODY_SIZE
-    return sizes.most_common(1)[0][0]
+    return source.most_common(1)[0][0]
 
 
 def _rank_font_sizes(sections: list[Section],

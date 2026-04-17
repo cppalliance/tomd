@@ -33,7 +33,12 @@ _FONT_MODIFIERS = frozenset({
 
 _MONO_KEYWORDS = frozenset({"mono", "courier", "code", "consolas", "menlo"})
 
-_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_CAMEL_SPLIT_RE = re.compile(
+    r"(?<=[a-z])(?=[A-Z])"
+    r"|(?<=[A-Z])(?=[A-Z][a-z])"
+    r"|(?<=[A-Za-z])(?=\d)"
+    r"|(?<=\d)(?=[A-Za-z])"
+)
 
 _GLYPH_CV_THRESHOLD = 0.15
 _FAT_THIN_REJECT_RATIO = 1.3
@@ -170,24 +175,41 @@ def classify_monospace(
     return False
 
 
+_PROPAGATE_MONO_MAJORITY = 0.5
+
+
 def propagate_monospace(mupdf_blocks: list[Block], spatial_blocks: list[Block],
                         dominant_font: str) -> None:
     """Apply spatial path's glyph-width monospace decisions to MuPDF spans.
 
-    Collects fonts classified as monospace by the spatial path (which has
-    per-character data), filters out the dominant body font (the single
-    most common font by character count), and sets monospace=True on
-    matching MuPDF spans. The dominant_font must be pre-lowercased.
+    Only propagates fonts whose spatial spans are mostly classified
+    monospace (by character count). Short spans of digits or thin
+    characters can false-positive the per-glyph signal, so requiring a
+    majority keeps proportional fonts (e.g. a regular text font with a
+    handful of "1" or "3.1" spans) out of the mono set.
+
+    The dominant_font is still discarded unless it passes a
+    name-based mono check, to avoid body text leaking into code blocks
+    when metrics happen to agree across a majority.
     """
-    mono_fonts: set[str] = set()
+    from collections import Counter
+    mono_chars: Counter[str] = Counter()
+    total_chars: Counter[str] = Counter()
     for b in spatial_blocks:
         for ln in b.lines:
             for s in ln.spans:
-                if s.monospace and s.text.strip():
-                    mono_fonts.add(s.font_name.lower())
-    # Only discard the dominant font if it is not itself a known monospace
-    # family. On code-heavy papers the code font may dominate by character
-    # count, and discarding it would suppress all code block detection.
+                if not s.text.strip():
+                    continue
+                key = s.font_name.lower()
+                total_chars[key] += len(s.text)
+                if s.monospace:
+                    mono_chars[key] += len(s.text)
+
+    mono_fonts = {
+        f for f, total in total_chars.items()
+        if total > 0 and mono_chars[f] / total >= _PROPAGATE_MONO_MAJORITY
+    }
+
     if dominant_font and not classify_monospace(dominant_font):
         mono_fonts.discard(dominant_font)
     if not mono_fonts:
