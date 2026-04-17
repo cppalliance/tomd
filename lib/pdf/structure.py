@@ -442,6 +442,7 @@ def structure_sections(sections: list[Section],
     structured = _detect_code_blocks(structured)
     structured = [s for s in structured if _detect_lang_label(s) is None]
     structured = _classify_wording_sections(structured)
+    _demote_repeated_low_confidence_numbers(structured)
     _validate_nesting(structured)
     return metadata, structured
 
@@ -841,17 +842,84 @@ def _classify_wording_sections(sections: list[Section]) -> list[Section]:
     return sections
 
 
+_PARAGRAPH_NUM_MIN_REPEATS = 3
+
+
+def _demote_repeated_low_confidence_numbers(sections: list[Section]) -> None:
+    """Demote LOW-confidence numbered headings when their section_num
+    repeats often enough to indicate paragraph numbering.
+
+    Real section numbers are unique, but many papers duplicate each one
+    between a TOC and the body (count 2), and a real section that ends up
+    at LOW confidence can also collide with paragraph numbering elsewhere.
+    Paragraph numbering resets per clause ("1 Constraints:", "2 Mandates:",
+    then later "1 Preconditions:", ...) so the same number typically shows
+    up 5 or more times. Requiring count >= 3 keeps TOC/body pairs and
+    section/paragraph 1-on-1 collisions intact while catching the
+    paragraph-numbering pattern.
+
+    Only LOW-confidence headings are considered, so a real section title
+    with font-size or bold confirmation is preserved regardless.
+    """
+    counts: Counter[str] = Counter()
+    nums_by_index: dict[int, str] = {}
+    for i, sec in enumerate(sections):
+        if (sec.kind != SectionKind.HEADING
+                or sec.confidence != Confidence.LOW):
+            continue
+        first_line = sec.text.split("\n")[0].strip()
+        m = SECTION_NUM_RE.match(first_line)
+        if not m:
+            continue
+        num = m.group(1)
+        nums_by_index[i] = num
+        counts[num] += 1
+
+    repeated = {num for num, c in counts.items()
+                if c >= _PARAGRAPH_NUM_MIN_REPEATS}
+    if not repeated:
+        return
+
+    for i, num in nums_by_index.items():
+        if num in repeated:
+            sec = sections[i]
+            _log.info("Demote repeated low-conf number %r: %r",
+                       num, sec.text[:40])
+            sec.kind = SectionKind.PARAGRAPH
+            sec.heading_level = 0
+
+
+_SIBLING_FONT_TOL = 0.1
+
+
 def _validate_nesting(sections: list[Section]) -> None:
     """Ensure heading levels don't skip more than one level deeper.
 
     Mutates headings that skip levels: adjusts heading_level and
     downgrades confidence from HIGH to MEDIUM when corrected.
+
+    Also consolidates runs of same-styled headings as siblings. When
+    consecutive headings share a font size, they're at the same logical
+    level; without this check, a run of similar entries (e.g. a dozen
+    "Changes since P0876RN" items) would each get prev_clamped + 1,
+    cascading to ever-deeper levels.
     """
     prev_level = 0
+    prev_font_size: float | None = None
     for sec in sections:
         if sec.kind != SectionKind.HEADING:
             continue
-        if prev_level > 0 and sec.heading_level > prev_level + 1:
+        is_sibling = (
+            prev_font_size is not None
+            and abs(sec.font_size - prev_font_size) <= _SIBLING_FONT_TOL
+        )
+        if is_sibling and prev_level > 0 and sec.heading_level > prev_level:
+            _log.info("Nesting sibling: h%d -> h%d for %r",
+                       sec.heading_level, prev_level, sec.text[:40])
+            sec.heading_level = prev_level
+            if sec.confidence == Confidence.HIGH:
+                sec.confidence = Confidence.MEDIUM
+        elif prev_level > 0 and sec.heading_level > prev_level + 1:
             corrected = prev_level + 1
             _log.info("Nesting fix: h%d -> h%d for %r",
                        sec.heading_level, corrected,
@@ -860,3 +928,4 @@ def _validate_nesting(sections: list[Section]) -> None:
             if sec.confidence == Confidence.HIGH:
                 sec.confidence = Confidence.MEDIUM
         prev_level = sec.heading_level
+        prev_font_size = sec.font_size
