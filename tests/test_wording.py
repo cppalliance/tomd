@@ -2,119 +2,172 @@
 
 from unittest.mock import MagicMock
 from conftest import make_span, make_line, make_block
+from lib.pdf.types import Span, Line, Block
 from lib.pdf.wording import classify_wording, collect_line_drawings
 
 
-def _color_to_int(r, g, b):
+def _color(r, g, b):
     """Convert 0-255 RGB to MuPDF integer color."""
     return (r << 16) | (g << 8) | b
 
 
-class TestDrawingMatch:
-    def test_underline_boosts_confidence(self):
-        green = _color_to_int(0, 133, 71)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"added {i}", color=green,
-                       bbox=(100, 50, 200, 60)) for i in range(6)]
-        lines = [Line(spans=[s]) for s in spans]
-        block = Block(lines=lines, page_num=0)
-        drawings = {0: [(60.5, 100, 200, (0, 0.5, 0))]}
-        problems = classify_wording([block], drawings)
-        assert len(problems) == 0
-
-    def test_underline_too_far_no_boost(self):
-        green = _color_to_int(0, 133, 71)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"added {i}", color=green,
-                       bbox=(100, 50, 200, 60)) for i in range(6)]
-        lines = [Line(spans=[s]) for s in spans]
-        block = Block(lines=lines, page_num=0)
-        drawings = {0: [(65, 100, 200, (0, 0.5, 0))]}
-        problems = classify_wording([block], drawings)
-        assert len(problems) > 0
-
-    def test_strikethrough_boosts_confidence(self):
-        red = _color_to_int(204, 0, 0)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"removed {i}", color=red,
-                       bbox=(100, 50, 200, 60)) for i in range(6)]
-        lines = [Line(spans=[s]) for s in spans]
-        block = Block(lines=lines, page_num=0)
-        drawings = {0: [(55, 100, 200, (0.8, 0, 0))]}
-        problems = classify_wording([block], drawings)
-        assert len(problems) == 0
-
-    def test_strikethrough_too_far_no_boost(self):
-        red = _color_to_int(204, 0, 0)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"removed {i}", color=red,
-                       bbox=(100, 50, 200, 60)) for i in range(6)]
-        lines = [Line(spans=[s]) for s in spans]
-        block = Block(lines=lines, page_num=0)
-        drawings = {0: [(48, 100, 200, (0.8, 0, 0))]}
-        problems = classify_wording([block], drawings)
-        assert len(problems) > 0
-
-    def test_no_drawings_medium_confidence(self):
-        green = _color_to_int(0, 133, 71)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"added {i}", color=green,
-                       bbox=(100, 50, 200, 60)) for i in range(6)]
-        lines = [Line(spans=[s]) for s in spans]
-        block = Block(lines=lines, page_num=0)
-        problems = classify_wording([block], {})
-        assert len(problems) > 0
+_GREEN = _color(0, 133, 71)
+_RED = _color(204, 0, 0)
+_BLUE = _color(5, 85, 193)
+_PURPLE = _color(128, 0, 128)
 
 
-class TestClassifyWording:
-    def test_green_span_classified_as_ins(self):
-        green = _color_to_int(0, 133, 71)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"added {i}", color=green,
-                       bbox=(10, 50, 200, 60)) for i in range(6)]
-        lines = [Line(spans=[s]) for s in spans]
-        block = Block(lines=lines, page_num=0)
-        drawings = {0: [(60.5, 0, 300, (0, 0.5, 0.3))]}
-        problems = classify_wording([block], drawings)
-        assert block.lines[0].spans[0].wording_role == "ins"
+def _green_block(n=6, text="added text", bbox=(10, 50, 200, 60)):
+    """Block of n lines, each a single green span with explicit bbox."""
+    spans = [Span(text=f"{text} {i}", color=_GREEN, bbox=bbox) for i in range(n)]
+    lines = [Line(spans=[s]) for s in spans]
+    return Block(lines=lines, page_num=0)
 
-    def test_red_span_classified_as_del(self):
-        red = _color_to_int(204, 0, 0)
-        block = make_block(["removed text"] * 5, page_num=0)
-        for ln in block.lines:
-            ln.spans[0].color = red
-        problems = classify_wording([block], {})
+
+def _red_block(n=6, text="removed text", bbox=(10, 50, 200, 60)):
+    """Block of n lines, each a single red span with explicit bbox."""
+    spans = [Span(text=f"{text} {i}", color=_RED, bbox=bbox) for i in range(n)]
+    lines = [Line(spans=[s]) for s in spans]
+    return Block(lines=lines, page_num=0)
+
+
+def _strikethrough_at(y, x0=10, x1=200):
+    """Drawings dict with a single strikethrough line."""
+    return {0: [(y, x0, x1, (0.8, 0, 0))]}
+
+
+class TestMatchStrikethrough:
+    def test_del_classified_with_matching_drawing(self):
+        block = _red_block()
+        # Strikethrough at span vertical center: (50+60)/2 = 55
+        problems = classify_wording([block], _strikethrough_at(55))
         assert block.lines[0].spans[0].wording_role == "del"
+        assert len(problems) == 0
 
-    def test_below_threshold_no_classification(self):
-        green = _color_to_int(0, 133, 71)
-        block = make_block(["tiny"], page_num=0)
-        block.lines[0].spans[0].color = green
+    def test_del_not_classified_without_drawing(self):
+        block = _red_block()
         problems = classify_wording([block], {})
-        assert block.lines[0].spans[0].wording_role is None
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
 
-    def test_black_span_not_classified(self):
-        block = make_block(["normal text"] * 10, page_num=0)
+    def test_del_not_classified_when_drawing_out_of_range(self):
+        block = _red_block()
+        # y=48, center=55, distance=7 > _STRIKETHROUGH_Y_TOLERANCE=2.0
+        problems = classify_wording([block], _strikethrough_at(48))
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+
+    def test_del_not_classified_when_drawing_too_narrow(self):
+        # Drawing width=5, span width=190 -> overlap fraction 5/190 < 0.3
+        block = _red_block(bbox=(10, 50, 200, 60))
+        narrow_drawings = {0: [(55, 10, 15, (0.8, 0, 0))]}
+        problems = classify_wording([block], narrow_drawings)
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+
+
+class TestInsClassification:
+    def test_ins_classified_without_drawing(self):
+        # Green spans are classified as ins even without underline drawing
+        block = _green_block()
         problems = classify_wording([block], {})
+        assert block.lines[0].spans[0].wording_role == "ins"
+        assert len(problems) == 0
+
+    def test_ins_classified_with_drawing(self):
+        block = _green_block()
+        underline = {0: [(60.5, 10, 200, (0, 0.5, 0))]}
+        problems = classify_wording([block], underline)
+        assert block.lines[0].spans[0].wording_role == "ins"
+        assert len(problems) == 0
+
+    def test_ins_high_confidence_no_problems(self):
+        block = _green_block(n=10)
+        problems = classify_wording([block], {})
+        assert len(problems) == 0
+
+
+class TestMajorityFilter:
+    def test_minority_red_not_classified(self):
+        """A few red words on an otherwise black line are not del."""
+        black = Span(text="normal text normal text normal text", color=0,
+                     bbox=(0, 50, 350, 60))
+        red_link = Span(text="link", color=_RED, bbox=(350, 50, 390, 60))
+        line = Line(spans=[black, red_link])
+        block = Block(lines=[line] * 6, page_num=0)
+        classify_wording([block], _strikethrough_at(55))
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+
+    def test_minority_green_not_classified(self):
+        """Inline green code identifier on a black line is not ins."""
+        black = Span(text="the function returns the value", color=0,
+                     bbox=(0, 50, 300, 60))
+        green_code = Span(text="T", color=_GREEN, bbox=(300, 50, 315, 60))
+        line = Line(spans=[black, green_code])
+        block = Block(lines=[line] * 6, page_num=0)
+        classify_wording([block], {})
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+
+    def test_majority_green_line_classified(self):
+        """When most of a line is green, it's wording ins."""
+        green = Span(text="void f(int x) { return x; }", color=_GREEN,
+                     bbox=(10, 50, 250, 60))
+        black = Span(text=" //", color=0, bbox=(250, 50, 280, 60))
+        line = Line(spans=[green, black])
+        block = Block(lines=[line] * 6, page_num=0)
+        classify_wording([block], {})
+        assert green.wording_role == "ins"
+
+
+class TestForeignColorFilter:
+    def test_purple_span_disqualifies_block(self):
+        """Block with purple text (syntax highlighting) is skipped."""
+        green = Span(text="added text", color=_GREEN, bbox=(10, 50, 200, 60))
+        purple = Span(text="keyword", color=_PURPLE, bbox=(200, 50, 270, 60))
+        line = Line(spans=[green, purple])
+        block = Block(lines=[line] * 6, page_num=0)
+        classify_wording([block], {})
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+
+    def test_blue_link_does_not_disqualify_block(self):
+        """Blue hyperlinks (link_url set) do not contaminate the block check."""
+        green = Span(text="added text added text", color=_GREEN, bbox=(10, 50, 200, 60))
+        blue_link = Span(text="[dcl.type]", color=_BLUE, bbox=(200, 50, 270, 60),
+                         link_url="https://eel.is/c++draft/dcl.type")
+        line = Line(spans=[green, blue_link])
+        block = Block(lines=[line] * 6, page_num=0)
+        classify_wording([block], {})
+        assert green.wording_role == "ins"
+
+    def test_blue_non_link_does_not_disqualify(self):
+        """Blue non-link text is allowed (cross-references without link annotation)."""
+        green = Span(text="added text added text", color=_GREEN, bbox=(10, 50, 200, 60))
+        blue = Span(text="[dcl.type]", color=_BLUE, bbox=(200, 50, 270, 60))
+        line = Line(spans=[green, blue])
+        block = Block(lines=[line] * 6, page_num=0)
+        classify_wording([block], {})
+        assert green.wording_role == "ins"
+
+
+class TestThreshold:
+    def test_below_min_spans_no_classification(self):
+        """Fewer than _MIN_WORDING_SPANS ins/del spans → nothing classified."""
+        block = _green_block(n=3)
+        classify_wording([block], {})
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+
+    def test_black_spans_not_classified(self):
+        blocks = [make_block(["normal text"] * 10, page_num=0)]
+        classify_wording(blocks, {})
         assert all(s.wording_role is None
-                   for ln in block.lines for s in ln.spans)
+                   for ln in blocks[0].lines for s in ln.spans)
 
-    def test_blue_span_not_classified(self):
-        blue = _color_to_int(5, 85, 193)
-        block = make_block(["link text"] * 10, page_num=0)
-        for ln in block.lines:
-            ln.spans[0].color = blue
-        problems = classify_wording([block], {})
-        assert all(s.wording_role is None
-                   for ln in block.lines for s in ln.spans)
+    def test_blue_spans_not_classified(self):
+        block = Block(
+            lines=[Line(spans=[Span(text="link text", color=_BLUE,
+                                   bbox=(10, 50, 200, 60))]) for _ in range(10)],
+            page_num=0,
+        )
+        classify_wording([block], {})
+        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
 
-    def test_medium_confidence_generates_problem(self):
-        green = _color_to_int(0, 133, 71)
-        blocks = [make_block(["added"] * 10, page_num=0)]
-        for ln in blocks[0].lines:
-            ln.spans[0].color = green
-        problems = classify_wording(blocks, {})
-        assert any("MEDIUM" in p or "medium" in p.lower() for p in problems)
 
 class TestCollectLineDrawings:
     def _make_page(self, drawings):
@@ -167,16 +220,3 @@ class TestCollectLineDrawings:
         drawing = {"items": [("l", p1, p2)], "color": None}
         page = self._make_page([drawing])
         assert collect_line_drawings(page) == []
-
-
-class TestHighConfidenceWording:
-    def test_high_confidence_no_problem(self):
-        green = _color_to_int(0, 133, 71)
-        from lib.pdf.types import Span, Line, Block
-        spans = [Span(text=f"added {i}", color=green,
-                       bbox=(10, 50, 200, 60)) for i in range(10)]
-        lines = [Line(spans=[s]) for s in spans]
-        blocks = [Block(lines=lines, page_num=0)]
-        drawings = {0: [(60.5, 0, 500, (0, 0.5, 0.3))]}
-        problems = classify_wording(blocks, drawings)
-        assert len(problems) == 0

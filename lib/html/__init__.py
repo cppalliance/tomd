@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from .. import ascii_escape, format_front_matter
+from .. import format_front_matter
 from . import extract as _extract
 from . import render as _render
 
@@ -56,4 +56,4 @@ def convert_html(path: Path | os.PathLike[str]) -> tuple[str, str | None]:
             prompt_parts.append("")
         prompts = "\n".join(prompt_parts)
 
-    return ascii_escape(md), prompts
+    return md, prompts

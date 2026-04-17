@@ -46,7 +46,7 @@ def test_convert_html_unknown_generator_prompts(tmp_path):
     assert "Only content" in md
 
 
-def test_convert_html_ascii_escapes_non_ascii(tmp_path):
+def test_convert_html_unicode_preserved(tmp_path):
     html = """<!DOCTYPE html><html><body>
 <header id="title-block-header">
 <h1 class="title">T\u00fctle</h1>
@@ -57,8 +57,7 @@ def test_convert_html_ascii_escapes_non_ascii(tmp_path):
     path = _write(tmp_path, "enc.html", html)
     md, prompts = convert_html(path)
     assert prompts is None
-    assert "\xfc" not in md
-    assert "uuml;" in md or "&#252;" in md
+    assert "\xfc" in md
 
 
 def test_convert_html_metadata_only_empty_body(tmp_path):

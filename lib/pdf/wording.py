@@ -1,15 +1,19 @@
 """Wording section detection via multi-signal HSV color + drawing analysis.
 
-Detects ins/del markup in WG21 PDF papers by combining two active signals:
-  1. HSV color analysis - saturation gates chromaticity, hue identifies
-     green (ins) vs red (del) vs blue (link) neighborhoods
-  2. Drawing decoration - horizontal underlines (ins) and strikethroughs
-     (del) from page.get_drawings() correlated with span bboxes
+Detects ins/del markup in WG21 PDF papers by combining three signals:
+  1. Block-level color contamination filter - blocks containing non-green/
+     non-red chromatic colors (purple, orange, cyan) are syntax-highlighted
+     code and are skipped entirely.
+  2. Line-level colored fraction - only lines where the majority (>50%) of
+     non-link characters are green or red are treated as wording lines.
+     This rejects accent-color hyperlinks scattered through prose.
+  3. Span-level classification - green spans on wording lines become ins;
+     red spans with a confirmed strikethrough drawing become del.
 
-Document-level body-relative color clustering (_build_body_color) is
-retained for planned v2 integration but not yet wired into classification.
-
-Confidence depends on signal agreement, per the Multi-Signal Confidence rule.
+Hyperlinks (span.link_url set) are excluded from all checks and fractions.
+Insertions require no drawing decoration. Deletions require a strikethrough
+drawing whose width overlaps at least 30% of the span to avoid matching
+table borders and decorative rules.
 """
 
 import colorsys
@@ -28,6 +32,9 @@ _BLUE_HUE_MIN = 210
 _BLUE_HUE_MAX = 270
 _UNDERLINE_Y_TOLERANCE = 1.5
 _STRIKETHROUGH_Y_TOLERANCE = 2.0
+_STRIKETHROUGH_OVERLAP_MIN = 0.3
+_WORDING_LINE_MAJORITY = 0.5
+_MIN_WORDING_SPANS = 5
 
 
 def _color_int_to_rgb(color_int: int) -> tuple[float, float, float]:
@@ -51,7 +58,7 @@ def _is_chromatic(s: float) -> bool:
 
 
 def _classify_hue(h: float) -> str | None:
-    """Map hue angle to candidate neighborhood."""
+    """Map hue angle to candidate neighborhood, or None for other hues."""
     if _GREEN_HUE_MIN <= h <= _GREEN_HUE_MAX:
         return "green"
     if h <= _RED_HUE_WRAP or h >= (360 - _RED_HUE_WRAP):
@@ -61,24 +68,68 @@ def _classify_hue(h: float) -> str | None:
     return None
 
 
-def _match_drawing(span_bbox, drawings: list, tolerance: float,
-                   anchor: str) -> bool:
-    """True if a horizontal drawing exists near a vertical anchor of the span.
+def _match_strikethrough(span_bbox, drawings: list) -> bool:
+    """True if a horizontal drawing crosses the vertical center of the span.
 
-    anchor="bottom" checks near bbox bottom (underline).
-    anchor="center" checks near bbox vertical center (strikethrough).
+    Requires the drawing to overlap at least _STRIKETHROUGH_OVERLAP_MIN of
+    the span width, rejecting full-page table borders and decorative rules.
     """
     if not drawings:
         return False
     sx0, sy0, sx1, sy1 = span_bbox
-    if anchor == "center":
-        y_ref = (sy0 + sy1) / 2.0
-    else:
-        y_ref = sy1
+    y_center = (sy0 + sy1) / 2.0
+    span_w = max(sx1 - sx0, 1.0)
     for dy, dx0, dx1, _ in drawings:
-        if abs(dy - y_ref) <= tolerance and dx0 <= sx1 and dx1 >= sx0:
+        if abs(dy - y_center) > _STRIKETHROUGH_Y_TOLERANCE:
+            continue
+        overlap = min(dx1, sx1) - max(dx0, sx0)
+        if overlap / span_w >= _STRIKETHROUGH_OVERLAP_MIN:
             return True
     return False
+
+
+def _block_has_foreign_colors(block: Block) -> bool:
+    """True if the block contains non-green/red/blue chromatic spans.
+
+    Indicates syntax-highlighted code where accent colors (purple, orange,
+    cyan) appear alongside green/red. Hyperlink spans are excluded since
+    blue links are expected in wording sections. Returns False for blocks
+    that contain only black, green, red, and blue (hyperlink) text.
+    """
+    for line in block.lines:
+        for span in line.spans:
+            if span.link_url:
+                continue
+            if not span.text.strip():
+                continue
+            h, s = _rgb_to_hue_sat(*_color_int_to_rgb(span.color))
+            if _is_chromatic(s) and _classify_hue(h) is None:
+                return True
+    return False
+
+
+def _line_colored_fraction(line) -> float:
+    """Fraction of non-link non-whitespace characters that are green or red.
+
+    Hyperlink spans are excluded from both numerator and denominator so
+    that a line full of red hyperlinks doesn't appear to be wording markup.
+    """
+    total = green = red = 0
+    for span in line.spans:
+        if span.link_url:
+            continue
+        n = len(span.text.replace(" ", ""))
+        if n == 0:
+            continue
+        total += n
+        h, s = _rgb_to_hue_sat(*_color_int_to_rgb(span.color))
+        if _is_chromatic(s):
+            hue = _classify_hue(h)
+            if hue == "green":
+                green += n
+            elif hue == "red":
+                red += n
+    return (green + red) / total if total else 0.0
 
 
 def _build_body_color(blocks: list[Block]) -> tuple[float, float, float]:
@@ -124,33 +175,45 @@ def collect_line_drawings(page) -> list[tuple[float, float, float, tuple]]:
     return lines
 
 
-_MIN_WORDING_SPANS = 5
-
-
 def classify_wording(blocks: list[Block],
                      page_drawings: dict[int, list]) -> list[str]:
     """Classify spans as ins/del/context using multi-signal analysis.
 
-    Two active signals: HSV color analysis and drawing decoration
-    correlation. Sets span.wording_role on matching spans.
+    Three-layer filter:
+      1. Blocks with foreign chromatic colors (not green/red/blue) are
+         skipped - they are syntax-highlighted code, not wording markup.
+      2. Only lines where >50% of non-link characters are green or red
+         are classified - this rejects accent-color hyperlinks in prose.
+      3. Green spans on majority lines become ins (no drawing required).
+         Red spans on majority lines become del only with a confirmed
+         strikethrough drawing (requires 30% span overlap to reject borders).
 
-    Returns a list of problem descriptions for the prompts file
-    (empty if all ins/del classifications are high confidence).
+    Sets span.wording_role on matching spans.
+    Returns a list of problem descriptions for the prompts file.
     """
     candidates: list[tuple] = []
 
     for block in blocks:
+        if _block_has_foreign_colors(block):
+            continue
+
         drawings = page_drawings.get(block.page_num, [])
 
         for line in block.lines:
+            if _line_colored_fraction(line) <= _WORDING_LINE_MAJORITY:
+                continue
+
             for span in line.spans:
                 if not span.text.strip():
+                    continue
+                if span.link_url:
                     continue
 
                 rgb = _color_int_to_rgb(span.color)
                 h, s = _rgb_to_hue_sat(*rgb)
 
                 if not _is_chromatic(s):
+                    # Non-chromatic span on a wording-majority line = context
                     if span.color != 0:
                         r, g, b = rgb
                         lightness = (r + g + b) / 3.0
@@ -159,27 +222,14 @@ def classify_wording(blocks: list[Block],
                     continue
 
                 hue_class = _classify_hue(h)
-
                 if hue_class == "blue":
                     continue
 
-                has_underline = _match_drawing(
-                    span.bbox, drawings, _UNDERLINE_Y_TOLERANCE, "bottom")
-                has_strikethrough = _match_drawing(
-                    span.bbox, drawings, _STRIKETHROUGH_Y_TOLERANCE, "center")
-
-                if hue_class == "green" and has_underline:
+                if hue_class == "green":
                     candidates.append((span, "ins", "high"))
-                elif hue_class == "red" and has_strikethrough:
-                    candidates.append((span, "del", "high"))
-                elif hue_class == "green":
-                    candidates.append((span, "ins", "medium"))
                 elif hue_class == "red":
-                    candidates.append((span, "del", "medium"))
-                elif has_underline:
-                    candidates.append((span, "ins", "low"))
-                elif has_strikethrough:
-                    candidates.append((span, "del", "low"))
+                    if _match_strikethrough(span.bbox, drawings):
+                        candidates.append((span, "del", "high"))
 
     ins_del = [c for c in candidates if c[1] in ("ins", "del")]
     if len(ins_del) < _MIN_WORDING_SPANS:
@@ -187,30 +237,13 @@ def classify_wording(blocks: list[Block],
                     len(ins_del), _MIN_WORDING_SPANS)
         return []
 
-    for span, role, confidence in candidates:
+    for span, role, _confidence in candidates:
         span.wording_role = role
 
     ins_count = sum(1 for _, r, _ in candidates if r == "ins")
     del_count = sum(1 for _, r, _ in candidates if r == "del")
     ctx_count = sum(1 for _, r, _ in candidates if r == "context")
-    high = sum(1 for _, r, c in candidates if c == "high" and r in ("ins", "del"))
-    medium = sum(1 for _, _, c in candidates if c == "medium")
-    low = sum(1 for _, _, c in candidates if c == "low")
-    _log.info("Wording detected: %d ins, %d del, %d context "
-               "(%d high, %d medium, %d low confidence)",
-               ins_count, del_count, ctx_count, high, medium, low)
+    _log.info("Wording detected: %d ins, %d del, %d context",
+               ins_count, del_count, ctx_count)
 
-    problems = []
-    if medium > 0 and high == 0:
-        problems.append(
-            f"Wording detected by color only (no underline/strikethrough "
-            f"decoration confirmation). {medium} spans classified at "
-            f"MEDIUM confidence. Verify these sections are actual "
-            f"proposed wording changes, not incidental colored text.")
-    if low > 0:
-        problems.append(
-            f"{low} spans classified at LOW confidence "
-            f"(decoration found but hue not in green/red range). "
-            f"These may be emphasis or non-wording decorations.")
-
-    return problems
+    return []

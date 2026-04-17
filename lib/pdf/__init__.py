@@ -15,7 +15,6 @@ from .table import detect_tables, exclude_table_regions
 from .wg21 import extract_metadata_from_blocks
 from .emit import emit_markdown, emit_prompts
 from .types import SectionKind, is_readable
-from .. import ascii_escape
 from ..toc import find_toc_indices
 
 __all__ = ["convert_pdf"]
@@ -54,8 +53,7 @@ def _get_page0_text_colors(page) -> dict[float, float]:
 def convert_pdf(path: Path) -> tuple[str, str | None]:
     """Convert a PDF file to Markdown.
 
-    Returns (markdown_text, prompts_text_or_none). The markdown text
-    is ASCII-encoded via `ascii_escape` (non-ASCII chars become escapes).
+    Returns (markdown_text, prompts_text_or_none).
     Returns ("", None) for empty or unreadable PDFs.
     Raises fitz exceptions for corrupt or inaccessible files.
     """
@@ -194,4 +192,4 @@ def convert_pdf(path: Path) -> tuple[str, str | None]:
         else:
             prompts = "# tomd - Conversion Issues\n" + wording_prompt
 
-    return ascii_escape(md), prompts
+    return md, prompts

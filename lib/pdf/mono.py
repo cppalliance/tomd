@@ -125,17 +125,26 @@ def classify_monospace(
 
     Called during extraction when raw character data is available
     (all three signals), or later with just font_name (signal 1 only).
-    When chars are provided, compares fat-character widths (M, W) against
-    thin-character widths (i, l, space) for immediate reject.
+    When chars and char_x_origins are provided, compares advance widths
+    (x-origin spacings) of fat characters (M, W) against thin characters
+    (i, l) to reject proportional fonts early. Advance widths are uniform
+    in monospace fonts regardless of glyph body width, so the ratio of fat
+    to thin advance widths is close to 1.0 for monospace and much larger
+    for proportional fonts.
     """
-    if chars and char_widths and len(chars) == len(char_widths):
-        fat_w = [w for c, w in zip(chars, char_widths)
-                 if c in _FAT_CHARS and w > 0]
-        thin_w = [w for c, w in zip(chars, char_widths)
-                  if c in _THIN_CHARS and w > 0]
-        if fat_w and thin_w:
-            avg_fat = sum(fat_w) / len(fat_w)
-            avg_thin = sum(thin_w) / len(thin_w)
+    if chars and char_x_origins and len(chars) == len(char_x_origins) and len(chars) >= 2:
+        fat_adv: list[float] = []
+        thin_adv: list[float] = []
+        for i in range(len(chars) - 1):
+            dx = char_x_origins[i + 1] - char_x_origins[i]
+            if dx > 0:
+                if chars[i] in _FAT_CHARS:
+                    fat_adv.append(dx)
+                elif chars[i] in _THIN_CHARS:
+                    thin_adv.append(dx)
+        if fat_adv and thin_adv:
+            avg_fat = sum(fat_adv) / len(fat_adv)
+            avg_thin = sum(thin_adv) / len(thin_adv)
             if avg_thin > 0 and avg_fat / avg_thin > _FAT_THIN_REJECT_RATIO:
                 return False
 
@@ -176,7 +185,10 @@ def propagate_monospace(mupdf_blocks: list[Block], spatial_blocks: list[Block],
             for s in ln.spans:
                 if s.monospace and s.text.strip():
                     mono_fonts.add(s.font_name.lower())
-    if dominant_font:
+    # Only discard the dominant font if it is not itself a known monospace
+    # family. On code-heavy papers the code font may dominate by character
+    # count, and discarding it would suppress all code block detection.
+    if dominant_font and not classify_monospace(dominant_font):
         mono_fonts.discard(dominant_font)
     if not mono_fonts:
         return
