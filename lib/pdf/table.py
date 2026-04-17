@@ -1,11 +1,22 @@
 """Table detection from MuPDF block/line structure.
 
-Detects tables by finding consecutive blocks where each block has
-2+ lines with a large x-gap between them (columnar layout). Tables
-are extracted with high confidence before dual-path comparison.
+Two-signal table detection:
+  Signal 1 (block structure): a block is columnar when it has 2+ lines whose
+    x-starts have gaps > _COLUMN_GAP_THRESHOLD. Consecutive matching-column
+    blocks form a table run.
+  Signal 2 (geometric column profile): x positions that co-occur with other
+    x positions in the same y-band across 2+ rows are confirmed table columns.
+    Body text is always alone in its y-band and never qualifies.
+
+Orphan absorption: single-line blocks whose x0 matches a confirmed column are
+"orphans" - the first physical line of a wrapped table cell. They are absorbed
+into the table run when the block following them is a confirmed table row
+(one-block lookahead). Absorbed orphans are merged into the next row's first
+cell so multi-line cells produce a single cell string.
 """
 
 import logging
+from collections import Counter, defaultdict
 
 from .types import Block, Line, Section, SectionKind, Confidence
 
@@ -15,6 +26,55 @@ _COLUMN_GAP_THRESHOLD = 50.0
 _MIN_TABLE_ROWS = 2
 _COLUMN_X_TOLERANCE = 10.0
 _TABLE_Y_OVERLAP_MARGIN = 5.0
+
+_COLUMN_X_BUCKET = 5.0    # bucket size for x-position clustering
+_Y_BAND_HEIGHT   = 15.0   # bucket size for y-position clustering
+_MIN_SHARED_YBANDS = 2    # x must co-occur with other columns in 2+ y-bands
+
+
+def _find_column_xs(blocks: list[Block]) -> frozenset[float]:
+    """Return x-start positions that are genuine table columns.
+
+    Uses the shared-y-band approach: an x position qualifies only when it
+    co-occurs in the same y-band with at least one other distinct x position,
+    across at least _MIN_SHARED_YBANDS such y-bands. Body text at the left
+    margin is alone in every y-band and therefore never qualifies.
+
+    Y-bands are scoped per page so that two lines on different pages at the
+    same absolute y coordinate are not treated as sharing a row.
+    """
+    yband_to_xs: dict[tuple[int, int], set[int]] = defaultdict(set)
+    for block in blocks:
+        for line in block.lines:
+            if not line.spans or not line.text.strip():
+                continue
+            x_key = round(line.bbox[0] / _COLUMN_X_BUCKET)
+            y_key = round(((line.bbox[1] + line.bbox[3]) / 2.0) / _Y_BAND_HEIGHT)
+            yband_to_xs[(block.page_num, y_key)].add(x_key)
+
+    shared_counts: Counter[int] = Counter()
+    for xs in yband_to_xs.values():
+        if len(xs) >= 2:
+            for x_key in xs:
+                shared_counts[x_key] += 1
+
+    return frozenset(
+        x_key * _COLUMN_X_BUCKET
+        for x_key, count in shared_counts.items()
+        if count >= _MIN_SHARED_YBANDS
+    )
+
+
+def _is_column_aligned_orphan(block: Block, column_xs: frozenset[float]) -> bool:
+    """True if block is a single-line block whose x0 aligns with a known column.
+
+    Only single-line blocks qualify. Multi-line non-columnar blocks are genuine
+    prose or captions and must not be absorbed into a table run.
+    """
+    if len(block.lines) != 1 or not block.lines[0].spans:
+        return False
+    x0 = block.lines[0].bbox[0]
+    return any(abs(x0 - cx) <= _COLUMN_X_BUCKET for cx in column_xs)
 
 
 def _block_column_positions(block: Block) -> list[float] | None:
@@ -54,6 +114,8 @@ def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
     Table sections have kind=TABLE with high confidence.
     Remaining blocks are the non-table blocks for normal processing.
     """
+    column_xs = _find_column_xs(blocks)  # geometric second signal
+
     table_sections: list[Section] = []
     remaining: list[Block] = []
     i = 0
@@ -72,6 +134,22 @@ def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
             if next_cols is not None and _columns_match(cols, next_cols):
                 table_blocks.append(blocks[j])
                 j += 1
+            elif (_is_column_aligned_orphan(blocks[j], column_xs)
+                  and j + 1 < len(blocks)
+                  and blocks[j].page_num == table_blocks[-1].page_num):
+                # One-block lookahead: absorb only when the following block
+                # confirms the table continues. The orphan must be on the same
+                # page as the last table row to prevent cross-page false matches.
+                # Putback is free - j stays here so the outer loop adds
+                # blocks[j] to remaining if we break.
+                peek_cols = _block_column_positions(blocks[j + 1])
+                if (peek_cols is not None
+                        and _columns_match(cols, peek_cols)
+                        and blocks[j + 1].page_num == blocks[j].page_num):
+                    table_blocks.append(blocks[j])
+                    j += 1
+                else:
+                    break
             else:
                 break
 
@@ -96,6 +174,23 @@ def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
                     )
                     row[best_col].extend(line.spans)
                 rows.append(row)
+
+            # Merge orphan partial rows (single populated first cell) into the
+            # following row so wrapped cell text becomes one cell string.
+            merged: list[list[list]] = []
+            k = 0
+            while k < len(rows):
+                row = rows[k]
+                if (k + 1 < len(rows)
+                        and bool(row[0])
+                        and all(not cell for cell in row[1:])
+                        and bool(rows[k + 1][0])):
+                    merged.append([row[0] + rows[k + 1][0]] + rows[k + 1][1:])
+                    k += 2
+                else:
+                    merged.append(row)
+                    k += 1
+            rows = merged
 
             text = "\n".join(
                 " | ".join(

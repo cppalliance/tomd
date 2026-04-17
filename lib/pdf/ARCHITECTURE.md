@@ -134,10 +134,11 @@ Enums:
 
 ### Layer 4: Table Detection (3 techniques)
 
-**T14. Table detection**
+**T14. Table detection (two-signal)**
 - `table.py:detect_tables`
-- Detects columnar layout: blocks with 2+ lines where x-starts have gaps > 50 units
-- Consecutive blocks with matching column positions (within 10-unit tolerance) grouped into tables (min 2 rows)
+- Signal 1 (block structure): blocks with 2+ lines where x-starts have gaps > 50 units are columnar. Consecutive matching-column blocks (within 10-unit tolerance) form a table run (min 2 rows).
+- Signal 2 (geometric column profile): pre-pass over all blocks collects x positions that co-occur with other x positions in the same y-band across 2+ y-bands. Body text (alone in its y-band) never qualifies; only genuine table column x positions are selected.
+- Orphan absorption: single-line blocks whose x0 matches a confirmed column are "orphans" (wrapped cell first lines). Absorbed when the following block is a full table row (one-block lookahead confirms continuation). Orphan partial rows are merged into the following row's first cell so multi-line cells render as a single cell string.
 - Extracted as TABLE sections with HIGH confidence
 
 **T15. Spatial table exclusion**
