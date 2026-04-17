@@ -308,6 +308,101 @@ class TestExtractHandwrittenMetadata:
         assert any("Ann" in x and "a@b.co" in x for x in meta["reply-to"])
 
 
+class TestAudienceBrSeparation:
+    """Audience cells with <br>-separated values must produce comma-separated text."""
+
+    def test_mpark_br_separated_audience(self):
+        html = """
+        <header id="title-block-header">
+        <h1 class="title">T</h1>
+        <table>
+          <tr><td>Document #:</td><td>P3045R7</td></tr>
+          <tr><td>Audience:</td><td>
+            LEWG Library Evolution Working Group<br>
+            SG6 Numerics<br>
+            SG16 Unicode<br>
+            SG20 Education<br>
+          </td></tr>
+        </table>
+        </header>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        aud = meta["audience"]
+        assert "LEWG" in aud
+        assert "SG6" in aud
+        assert "SG16" in aud
+        assert "SG20" in aud
+        assert "," in aud
+
+    def test_generic_br_separated_audience(self):
+        html = """
+        <table>
+          <tr><th>Audience:</th><td>EWG<br>CWG<br>SG12</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        aud = meta["audience"]
+        assert "EWG" in aud
+        assert "CWG" in aud
+        assert "SG12" in aud
+        assert "," in aud
+
+    def test_single_audience_no_br(self):
+        html = """
+        <header id="title-block-header">
+        <h1 class="title">T</h1>
+        <table>
+          <tr><td>Audience:</td><td>LEWG</td></tr>
+        </table>
+        </header>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        assert meta["audience"] == "LEWG"
+
+    def test_handwritten_table_br_audience(self):
+        html = """
+        <table class="header">
+          <tr><th>Audience</th><td>SG1<br>LEWG<br>LWG</td></tr>
+        </table>
+        <h1>Title</h1>
+        """
+        meta = extract_metadata(parse_html(html), "hand-written")
+        aud = meta["audience"]
+        assert "SG1" in aud
+        assert "LEWG" in aud
+        assert "LWG" in aud
+        assert "," in aud
+
+    def test_wg21_br_audience(self):
+        html = """
+        <div class="wg21-head">
+          <dl>
+            <dt>Audience:</dt><dd>SG1<br>LEWG</dd>
+          </dl>
+        </div>
+        """
+        meta = _extract_wg21_metadata(parse_html(html))
+        aud = meta["audience"]
+        assert "SG1" in aud
+        assert "LEWG" in aud
+        assert "," in aud
+
+    def test_bikeshed_br_audience(self):
+        html = """
+        <div data-fill-with="spec-metadata">
+          <dl>
+            <dt>Audience:</dt>
+            <dd>EWG<br>LEWG</dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "bikeshed")
+        aud = meta["audience"]
+        assert "EWG" in aud
+        assert "LEWG" in aud
+        assert "," in aud
+
+
 class TestStripBoilerplate:
     def test_removes_style_script(self):
         html = "<style>body{}</style><script>x()</script><p>Keep</p>"

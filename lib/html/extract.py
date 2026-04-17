@@ -100,7 +100,7 @@ def _extract_mpark_metadata(soup: BeautifulSoup) -> dict:
                 metadata["date"] = m.group(0)
 
         elif label == "audience":
-            metadata["audience"] = value_cell.get_text(strip=True).rstrip()
+            metadata["audience"] = _get_text_br_separated(value_cell)
 
         elif "reply" in label:
             authors = _parse_mpark_authors(value_cell)
@@ -118,14 +118,28 @@ def _normalize_label(text: str) -> str:
     return text.strip().rstrip(":").lower()
 
 
+def _get_text_br_separated(cell: Tag) -> str:
+    """Extract text from a cell, converting <br> tags to comma separators."""
+    for br in cell.find_all("br"):
+        br.replace_with(", ")
+    text = cell.get_text(strip=True)
+    text = re.sub(r"(,\s*){2,}", ", ", text)
+    return text.strip(", ")
+
+
 _ANGLE_BRACKET_RE = re.compile(r"[<>]")
+
+
+_BR_SENTINEL = "\x00"
 
 
 def _parse_mpark_authors(cell: Tag) -> list[str]:
     """Parse 'Name<br>&lt;email&gt;' author entries from a table cell."""
     for br in cell.find_all("br"):
-        br.replace_with("\n")
-    lines = cell.get_text().split("\n")
+        br.replace_with(_BR_SENTINEL)
+    text = cell.get_text()
+    text = text.replace("\n", " ").replace("\r", " ")
+    lines = text.split(_BR_SENTINEL)
 
     def _clean_author(text):
         return _ANGLE_BRACKET_RE.sub("", text).strip()
@@ -173,7 +187,7 @@ def _extract_bikeshed_metadata(soup: BeautifulSoup) -> dict:
             elif child.name == "dd" and current_label:
                 text = child.get_text(strip=True)
                 if "audience" in current_label:
-                    metadata["audience"] = text
+                    metadata["audience"] = _get_text_br_separated(child)
                 elif "editor" in current_label or "author" in current_label:
                     email_link = child.find("a", class_="email")
                     if email_link:
@@ -237,7 +251,7 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
                     if m:
                         metadata["date"] = m.group(0)
                 elif "audience" in label:
-                    metadata["audience"] = value
+                    metadata["audience"] = _get_text_br_separated(td)
                 elif "reply" in label:
                     a_tag = td.find("a")
                     if a_tag:
@@ -301,6 +315,8 @@ def _extract_wg21_metadata(soup: BeautifulSoup) -> dict:
             m = DATE_RE.search(value)
             if m:
                 metadata["date"] = m.group(0)
+        elif field == "audience":
+            metadata["audience"] = _get_text_br_separated(dd)
         elif field == "reply-to":
             authors = parse_author_lines([value])
             if authors:
@@ -333,7 +349,7 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
                     if m:
                         metadata["date"] = m.group(0)
                 elif "audience" in label:
-                    metadata["audience"] = value
+                    metadata["audience"] = _get_text_br_separated(cells[-1])
 
     return metadata
 
