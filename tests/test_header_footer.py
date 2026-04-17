@@ -90,8 +90,8 @@ def test_detect_repeating_exact_text():
         [PageEdgeItem(text="Unique Title", y=30.0, page_num=5, bbox=(0, 30, 100, 42))],
     ]
     result = detect_repeating(all_edges, total_pages=5)
-    # y_bucket = round(30 / Y_TOLERANCE) * Y_TOLERANCE = 30.0 (Y_TOLERANCE is 2.0)
-    assert (30.0, "Running Head") in result
+    # Bucket is derived from bbox center (30+42)/2 = 36, quantized to Y_TOLERANCE=2.
+    assert (36.0, "Running Head") in result
 
 
 def test_detect_repeating_skips_below_threshold():
@@ -120,8 +120,8 @@ def test_detect_repeating_page_number_pattern():
         for pg in range(1, 6)
     ]
     result = detect_repeating(all_edges, total_pages=5)
-    # y_bucket = round(580 / 2) * 2 = 580.0
-    assert (580.0, "__PAGE_NUM__") in result
+    # Bucket is derived from bbox center (580+592)/2 = 586, quantized to Y_TOLERANCE=2.
+    assert (586.0, "__PAGE_NUM__") in result
 
 
 def test_detect_repeating_doc_number_pattern():
@@ -135,7 +135,8 @@ def test_detect_repeating_doc_number_pattern():
         for i in range(4)
     ]
     result = detect_repeating(all_edges, total_pages=4)
-    assert (30.0, "__DOC_NUM__") in result
+    # Bucket is derived from bbox center (30+42)/2 = 36, quantized to Y_TOLERANCE=2.
+    assert (36.0, "__DOC_NUM__") in result
 
 
 # ---- strip_repeating -----------------------------------------------------
@@ -182,3 +183,104 @@ def test_strip_repeating_empty_input():
     """Empty repeating set returns blocks unchanged."""
     b = _make_block_at_y([("content", 300)])
     assert strip_repeating([b], set()) == [b]
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for PR #9 per-span stripping.
+# ---------------------------------------------------------------------------
+
+
+def _multi_span_line(texts, y, *, page_num=0):
+    """Build a Line with multiple spans at the same y (different x-ranges).
+
+    Models the spatial path merging left/center/right header columns
+    into one line with one span per column.
+    """
+    x = 50.0
+    spans = []
+    for t in texts:
+        w = 8.0 * max(len(t), 1)
+        spans.append(Span(text=t, font_name="Body", font_size=11.0,
+                           bbox=(x, y, x + w, y + 12.0)))
+        x += w + 40.0  # large inter-column gap
+    return Line(
+        spans=spans,
+        bbox=(50.0, y, x, y + 12.0),
+        page_num=page_num,
+    )
+
+
+def test_strip_repeating_drops_matched_spans_keeps_the_rest():
+    """Spatial-path merged header: strip matched column-spans, keep unique ones."""
+    # "Doc P1234R0"  (doc-num pattern)  |  "Appendix: Review"  (unique)  |  "3"  (page num)
+    line = _multi_span_line(["P1234R0", "Appendix: Review", "3"], 30.0)
+    block = Block(lines=[line], bbox=line.bbox, page_num=0)
+
+    repeating = {(36.0, "__DOC_NUM__"), (36.0, "__PAGE_NUM__")}
+    result = strip_repeating([block], repeating)
+
+    assert len(result) == 1, "block with surviving span must be kept"
+    kept_line = result[0].lines[0]
+    kept_texts = [s.text.strip() for s in kept_line.spans]
+    assert "P1234R0" not in kept_texts
+    assert "3" not in kept_texts
+    assert "Appendix: Review" in kept_texts
+
+
+def test_strip_repeating_drops_all_spans_drops_line():
+    """When every column-span matches a repeating pattern, the line is removed."""
+    line = _multi_span_line(["P1234R0", "5"], 30.0)
+    block = Block(lines=[line], bbox=line.bbox, page_num=0)
+
+    repeating = {(36.0, "__DOC_NUM__"), (36.0, "__PAGE_NUM__")}
+    result = strip_repeating([block], repeating)
+
+    # All spans matched; line is stripped; block becomes empty and is dropped.
+    assert result == [], "block whose only line is fully stripped must be dropped"
+
+
+def test_strip_repeating_whole_line_match_still_works():
+    """A line whose full text matches the repeating exact pattern is stripped.
+
+    Regression: the per-span path must not break the original whole-line
+    strip that handles single-span lines on the MuPDF path.
+    """
+    # Single span whose text exactly matches the repeating entry.
+    line = Line(
+        spans=[Span(text="Running Head", font_name="Body",
+                     font_size=11.0, bbox=(50.0, 30.0, 200.0, 42.0))],
+        bbox=(50.0, 30.0, 200.0, 42.0),
+    )
+    block = Block(lines=[line], bbox=line.bbox)
+
+    repeating = {(36.0, "Running Head")}
+    result = strip_repeating([block], repeating)
+    assert result == [], "whole-line exact match must still strip the block"
+
+
+def test_strip_repeating_span_outside_bucket_preserved():
+    """A span whose y-bucket is far from any repeating pattern is preserved
+    even if another span on the same line is stripped."""
+    # Build a line with two spans at different y-buckets (unusual, but
+    # defensible for floating column-spans with differing baselines).
+    s_top = Span(text="P1234R0", font_name="Body", font_size=11.0,
+                  bbox=(50.0, 30.0, 110.0, 42.0))   # bucket = 36
+    s_body = Span(text="real content", font_name="Body", font_size=11.0,
+                   bbox=(300.0, 300.0, 420.0, 312.0))  # bucket = 306
+    line = Line(
+        spans=[s_top, s_body],
+        bbox=(50.0, 30.0, 420.0, 312.0),
+    )
+    block = Block(lines=[line], bbox=line.bbox)
+
+    repeating = {(36.0, "__DOC_NUM__")}
+    result = strip_repeating([block], repeating)
+    # The line's own y_bucket (from its full bbox center) will land far from
+    # any repeating pattern; implementation short-circuits via _patterns_near
+    # returning empty and keeps the whole line untouched.
+    assert len(result) == 1
+    kept = result[0].lines[0]
+    kept_texts = [s.text for s in kept.spans]
+    assert "real content" in kept_texts
+    # Per-span strip does not fire because line_patterns is empty.
+    assert "P1234R0" in kept_texts

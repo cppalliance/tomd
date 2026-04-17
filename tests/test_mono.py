@@ -2,6 +2,7 @@
 
 from conftest import make_span, make_line, make_block
 from lib.pdf.mono import classify_monospace, propagate_monospace
+from lib.pdf.types import Span, Line, Block
 
 
 def test_keyword_courier():
@@ -105,3 +106,73 @@ def test_propagate_keeps_dominant_monospace():
 
     propagate_monospace([m_block], [s_block], "courier")
     assert m_block.lines[0].spans[0].monospace is True
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for PR #9 propagate_monospace majority filter.
+# ---------------------------------------------------------------------------
+
+
+def test_propagate_minority_mono_not_adopted():
+    """A prose font with <50% monospace-classified chars is NOT propagated.
+
+    Short spans like "3.1" or "42" can false-positive the per-glyph signal,
+    but they represent a small minority of the font's characters. Requiring
+    a majority keeps proportional text fonts out of the mono set.
+    """
+    # Lato-Light appears in ~100 chars total, only 3 of which are mono.
+    prose_lines = [
+        Line(spans=[Span(text="A" * 97, font_name="Lato-Light",
+                          monospace=False)]),
+        Line(spans=[Span(text="3.1", font_name="Lato-Light",
+                          monospace=True)]),  # false-positive
+    ]
+    spatial = [Block(lines=prose_lines)]
+
+    mupdf_line = Line(spans=[Span(text="more prose", font_name="Lato-Light",
+                                    monospace=False)])
+    mupdf = [Block(lines=[mupdf_line])]
+
+    propagate_monospace(mupdf, spatial, "some-dominant-font")
+    assert mupdf[0].lines[0].spans[0].monospace is False, (
+        "minority mono classification must not contaminate a prose font"
+    )
+
+
+def test_propagate_majority_mono_is_adopted():
+    """A font with >=50% monospace-classified chars IS propagated."""
+    code_lines = [
+        Line(spans=[Span(text="int x = 0;", font_name="MyCodeFont",
+                          monospace=True)]),
+        Line(spans=[Span(text="y", font_name="MyCodeFont",
+                          monospace=False)]),  # minority non-mono
+    ]
+    spatial = [Block(lines=code_lines)]
+
+    mupdf_line = Line(spans=[Span(text="return x;", font_name="MyCodeFont",
+                                    monospace=False)])
+    mupdf = [Block(lines=[mupdf_line])]
+
+    propagate_monospace(mupdf, spatial, "arial")
+    assert mupdf[0].lines[0].spans[0].monospace is True, (
+        "majority-monospace font should propagate to MuPDF spans"
+    )
+
+
+def test_propagate_exactly_at_threshold_is_adopted():
+    """50%% exactly meets the majority threshold (inclusive)."""
+    # 5 mono chars, 5 non-mono chars -> ratio 0.5 (meets threshold).
+    lines = [
+        Line(spans=[Span(text="aaaaa", font_name="EdgeFont",
+                          monospace=True)]),
+        Line(spans=[Span(text="bbbbb", font_name="EdgeFont",
+                          monospace=False)]),
+    ]
+    spatial = [Block(lines=lines)]
+
+    mupdf_line = Line(spans=[Span(text="target", font_name="EdgeFont",
+                                    monospace=False)])
+    mupdf = [Block(lines=[mupdf_line])]
+
+    propagate_monospace(mupdf, spatial, "arial")
+    assert mupdf[0].lines[0].spans[0].monospace is True

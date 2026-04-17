@@ -1,12 +1,14 @@
 """Tests for lib.pdf.structure."""
 
-from conftest import make_block, make_section
+from conftest import make_block, make_line, make_section, make_span
 from lib.pdf.types import (
     Block, Line, Span, Section, SectionKind, Confidence,
 )
 from lib.pdf.structure import (
     compare_extractions, structure_sections,
     heading_confidence, _extract_metadata,
+    _detect_body_size, _validate_nesting,
+    _demote_repeated_low_confidence_numbers,
 )
 
 
@@ -295,3 +297,248 @@ class TestBlockFontSize:
         # Lines: two at 14, one at 11 -> 14 wins by line count.
         # Character count would favor 11.
         assert block.font_size == 14.0
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for PR #9 fixes.
+# ---------------------------------------------------------------------------
+
+
+def _mk_section(text, *, font_size=10.0, monospace=False, bold=False,
+                kind=SectionKind.PARAGRAPH,
+                confidence=Confidence.HIGH, heading_level=0):
+    """Build a Section whose single line carries explicit span attributes."""
+    span = make_span(text, font_size=font_size,
+                      monospace=monospace, bold=bold)
+    line = Line(spans=[span])
+    return Section(kind=kind, text=text, confidence=confidence,
+                   heading_level=heading_level, lines=[line],
+                   font_size=font_size)
+
+
+class TestDetectBodySizeProsePreference:
+    """`_detect_body_size` prefers prose over monospace on code-heavy papers."""
+
+    def test_prose_wins_over_monospace_majority(self):
+        """Prose beats a more frequent monospace size when it clears the floor."""
+        prose = [_mk_section("prose line " + ("x" * 60), font_size=11.0)
+                 for _ in range(10)]
+        code = [_mk_section("code line " + ("y" * 60), font_size=9.0,
+                             monospace=True) for _ in range(30)]
+        body = _detect_body_size(prose + code)
+        assert body == 11.0, (
+            "prose font should be picked as body even when monospace spans "
+            "hold more characters overall"
+        )
+
+    def test_fallback_to_all_when_prose_too_small(self):
+        """When prose is scarce, the overall most-common size wins (wording papers)."""
+        tiny_prose = [_mk_section("hi", font_size=11.0)]  # <<500 chars
+        code = [_mk_section("code " + ("y" * 200), font_size=9.0,
+                             monospace=True) for _ in range(10)]
+        body = _detect_body_size(tiny_prose + code)
+        assert body == 9.0, (
+            "with insufficient prose, body falls back to the most common size"
+        )
+
+    def test_empty_sections_fall_back(self):
+        """No data at all returns the FALLBACK_BODY_SIZE."""
+        from lib.pdf.types import FALLBACK_BODY_SIZE
+        assert _detect_body_size([]) == FALLBACK_BODY_SIZE
+
+
+class TestHeadingProseLengthRejection:
+    """Long numbered first lines don't become headings at LOW confidence."""
+
+    def test_long_numbered_line_demoted(self):
+        """A numbered prose line with >12 words and no font/bold signal is a paragraph."""
+        long_line = ("1 A fiber is a single flow of control with a "
+                     "private stack and an associated execution context.")
+        sec = _mk_section(long_line, font_size=10.0)
+        # Flank it with body text at the same size so `_detect_body_size`
+        # agrees that 10.0 is body and no font-level signal fires.
+        body_fill = [_mk_section("ordinary body " + ("x" * 80), font_size=10.0)
+                     for _ in range(10)]
+        _, result = structure_sections(body_fill + [sec], has_title=True)
+        demoted = [s for s in result if long_line in s.text]
+        assert demoted, "expected the long numbered line to appear in output"
+        assert all(s.kind != SectionKind.HEADING for s in demoted), (
+            "prose-length first line should not become a heading at LOW conf"
+        )
+
+    def test_long_numbered_line_kept_with_font_signal(self):
+        """A long numbered line at a heading font size is preserved as a heading."""
+        long_title = ("1 A fiber is a single flow of control with a "
+                      "private stack and an associated execution context")
+        heading = _mk_section(long_title, font_size=14.0)
+        body_fill = [_mk_section("plain body " + ("x" * 80), font_size=10.0)
+                     for _ in range(10)]
+        _, result = structure_sections(body_fill + [heading], has_title=True)
+        matches = [s for s in result if long_title in s.text]
+        assert matches and any(s.kind == SectionKind.HEADING for s in matches), (
+            "long numbered line at heading font size must stay a HEADING "
+            "(MEDIUM or HIGH confidence survives the length cap)"
+        )
+
+
+class TestDemoteRepeatedLowConfidenceNumbers:
+    """Paragraph-number resets collapse to PARAGRAPH; TOC/body pairs do not."""
+
+    def _heading(self, num, text, *, confidence=Confidence.LOW):
+        return _mk_section(f"{num} {text}", font_size=10.0,
+                            kind=SectionKind.HEADING,
+                            confidence=confidence, heading_level=2)
+
+    def test_three_repeats_demoted(self):
+        """section_num repeating >=3 times at LOW confidence becomes PARAGRAPH."""
+        sections = [
+            self._heading("1", "Constraints: first"),
+            self._heading("2", "Mandates: one"),
+            self._heading("1", "Preconditions: second"),
+            self._heading("1", "Effects: third"),
+        ]
+        _demote_repeated_low_confidence_numbers(sections)
+        ones = [s for s in sections if s.text.startswith("1 ")]
+        assert all(s.kind == SectionKind.PARAGRAPH for s in ones), (
+            "three or more occurrences of number '1' at LOW conf should demote"
+        )
+        assert all(s.heading_level == 0 for s in ones)
+
+    def test_two_repeats_preserved(self):
+        """A TOC/body pair (count == 2) is NOT demoted."""
+        sections = [
+            self._heading("1", "Introduction"),
+            self._heading("1", "Introduction"),  # second copy (body)
+        ]
+        _demote_repeated_low_confidence_numbers(sections)
+        assert all(s.kind == SectionKind.HEADING for s in sections), (
+            "pair-count (TOC + body) should be left alone"
+        )
+
+    def test_medium_confidence_not_demoted(self):
+        """MEDIUM/HIGH confidence headings are never touched, even if they repeat."""
+        sections = [
+            self._heading("1", "a", confidence=Confidence.MEDIUM),
+            self._heading("1", "b", confidence=Confidence.MEDIUM),
+            self._heading("1", "c", confidence=Confidence.MEDIUM),
+        ]
+        _demote_repeated_low_confidence_numbers(sections)
+        assert all(s.kind == SectionKind.HEADING for s in sections)
+
+    def test_demoted_confidence_left_low(self):
+        """Pins current behavior: demoted sections keep Confidence.LOW.
+
+        Not currently observed as a problem; documented in
+        issues/pr9-review.md. Any change to the demotion path should
+        consciously revisit this pin.
+        """
+        sections = [
+            self._heading("1", "first"),
+            self._heading("1", "second"),
+            self._heading("1", "third"),
+        ]
+        _demote_repeated_low_confidence_numbers(sections)
+        assert all(s.confidence == Confidence.LOW for s in sections), (
+            "demoted paragraphs currently retain their heading's LOW "
+            "confidence; update issues/pr9-review.md if this changes"
+        )
+
+
+class TestValidateNestingSiblingClamp:
+    """Same-font-size consecutive headings are treated as siblings."""
+
+    def _h(self, text, *, level, fs):
+        return _mk_section(text, font_size=fs,
+                            kind=SectionKind.HEADING,
+                            confidence=Confidence.HIGH,
+                            heading_level=level)
+
+    def test_sibling_run_stays_flat(self):
+        """A long run of same-font revision headings doesn't cascade."""
+        sections = [
+            self._h("## Changes", level=2, fs=14.0),
+            self._h("### Changes since P21", level=3, fs=12.0),
+            # Each of the following originally got level = prev_clamped + 1.
+            # Sibling logic pins them all to level 3.
+            self._h("#### Changes since P20", level=4, fs=12.0),
+            self._h("##### Changes since P19", level=5, fs=12.0),
+            self._h("###### Changes since P18", level=6, fs=12.0),
+        ]
+        _validate_nesting(sections)
+        levels = [s.heading_level for s in sections]
+        assert levels == [2, 3, 3, 3, 3], (
+            f"expected runs of same-font siblings at level 3; got {levels}"
+        )
+
+    def test_sibling_downgrades_high_to_medium(self):
+        """When the sibling rule fires, HIGH confidence drops to MEDIUM."""
+        sections = [
+            self._h("## Root", level=2, fs=14.0),
+            self._h("### Child", level=3, fs=12.0),
+            self._h("#### Grandchild", level=4, fs=12.0),
+        ]
+        _validate_nesting(sections)
+        gc = sections[-1]
+        assert gc.heading_level == 3
+        assert gc.confidence == Confidence.MEDIUM
+
+    def test_different_font_allows_nesting(self):
+        """Truly different font sizes still pass through the skip-level rule."""
+        sections = [
+            self._h("## Root", level=2, fs=14.0),
+            self._h("### Child", level=3, fs=12.0),
+            self._h("#### Grandchild", level=4, fs=10.0),
+        ]
+        _validate_nesting(sections)
+        assert [s.heading_level for s in sections] == [2, 3, 4]
+
+    def test_current_behavior_flattens_legit_nesting_same_font(self):
+        """Pins the risk documented in issues/pr9-review.md.
+
+        Papers that express depth through section numbering while using
+        one font size for all sub-levels will have legitimate h4s clamped
+        to h3. This test encodes the CURRENT behavior so that any future
+        change (e.g. letting section-number depth veto the sibling rule)
+        is noticed in review.
+        """
+        sections = [
+            self._h("## 2 Motivation", level=2, fs=14.0),
+            self._h("### 2.1 Background", level=3, fs=12.0),
+            self._h("#### 2.1.1 History", level=4, fs=12.0),
+        ]
+        _validate_nesting(sections)
+        assert sections[-1].heading_level == 3, (
+            "currently flattens 2.1.1 to h3; update issues/pr9-review.md "
+            "if section-number depth is made to veto the sibling rule"
+        )
+
+    def test_tight_font_tolerance_misses_fractional_variance(self):
+        """Pins the risk documented in issues/pr9-review.md.
+
+        `_SIBLING_FONT_TOL = 0.1` rejects sibling status between 11.7 and
+        12.0 (diff 0.3), which is within the fractional variance common
+        in LaTeX PDFs. Encodes CURRENT behavior.
+        """
+        sections = [
+            self._h("## Root", level=2, fs=14.0),
+            self._h("### Sibling A", level=3, fs=12.0),
+            # fs = 11.7 is > 0.1 away from 12.0, so NOT a sibling;
+            # skip-level rule clamps level 5 -> 4 (prev + 1).
+            self._h("##### Sibling B", level=5, fs=11.7),
+        ]
+        _validate_nesting(sections)
+        assert sections[-1].heading_level == 4, (
+            "current absolute 0.1 tolerance treats 11.7 and 12.0 as "
+            "different tiers; widening the tolerance would change this "
+            "assertion — see issues/pr9-review.md"
+        )
+
+    def test_close_fractional_is_sibling(self):
+        """Within the 0.1 tolerance, sizes like 11.95 vs 12.0 are siblings."""
+        sections = [
+            self._h("## Root", level=2, fs=14.0),
+            self._h("### Sibling A", level=3, fs=12.0),
+            self._h("#### Sibling B", level=4, fs=11.95),
+        ]
+        _validate_nesting(sections)
+        assert sections[-1].heading_level == 3
