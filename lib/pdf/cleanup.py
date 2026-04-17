@@ -17,6 +17,12 @@ from .types import (
 _log = logging.getLogger(__name__)
 
 
+def _y_bucket(bbox: tuple[float, float, float, float]) -> float:
+    """Quantize a bbox's vertical center to the Y_TOLERANCE grid."""
+    y_center = (bbox[1] + bbox[3]) / 2.0
+    return round(y_center / Y_TOLERANCE) * Y_TOLERANCE
+
+
 def get_edge_items(blocks: list[Block], page_num: int,
                     page_height: float) -> list[PageEdgeItem]:
     """Get the top N and bottom N text items from a page by y-coordinate.
@@ -72,8 +78,7 @@ def detect_repeating(all_edge_items: list[list[PageEdgeItem]],
 
     for page_items in all_edge_items:
         for item in page_items:
-            y_key = round(item.y / Y_TOLERANCE) * Y_TOLERANCE
-            y_buckets[y_key].append(item)
+            y_buckets[_y_bucket(item.bbox)].append(item)
 
     repeating = set()
     for y_key, items in y_buckets.items():
@@ -107,9 +112,35 @@ def detect_repeating(all_edge_items: list[list[PageEdgeItem]],
 
 def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
                     ) -> list[Block]:
-    """Remove lines matching repeating header/footer patterns from blocks."""
+    """Remove lines (or individual spans) matching repeating header/footer
+    patterns from blocks.
+
+    Spatial-path lines merge left/center/right header columns (one span
+    per column). The whole-line text then won't match any single pattern,
+    but each column-span will; per-span stripping handles that while
+    preserving non-header content that shares the header y-coordinate
+    (e.g. a one-off appendix title).
+    """
     if not repeating:
         return blocks
+
+    patterns_by_y: dict[float, list[str]] = defaultdict(list)
+    for ry, rp in repeating:
+        patterns_by_y[ry].append(rp)
+
+    def _patterns_near(y_key: float) -> list[str]:
+        return (patterns_by_y.get(y_key - Y_TOLERANCE, [])
+                + patterns_by_y.get(y_key, [])
+                + patterns_by_y.get(y_key + Y_TOLERANCE, []))
+
+    def _matches(text: str, rpattern: str) -> bool:
+        if rpattern == text:
+            return True
+        if rpattern == "__PAGE_NUM__" and PAGE_NUM_RE.match(text):
+            return True
+        if rpattern == "__DOC_NUM__" and DOC_NUM_RE.search(text):
+            return True
+        return False
 
     result = []
     for block in blocks:
@@ -119,29 +150,36 @@ def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
             if not text:
                 kept_lines.append(line)
                 continue
-            y_center = (line.bbox[1] + line.bbox[3]) / 2.0
-            y_key = round(y_center / Y_TOLERANCE) * Y_TOLERANCE
-            stripped = False
-            for ry, rpattern in repeating:
-                if abs(y_key - ry) > Y_TOLERANCE:
-                    continue
-                if rpattern == text:
-                    stripped = True
-                    break
-                if rpattern == "__PAGE_NUM__" and PAGE_NUM_RE.match(text):
-                    stripped = True
-                    break
-                if rpattern == "__DOC_NUM__" and DOC_NUM_RE.search(text):
-                    stripped = True
-                    break
-            if not stripped:
+
+            line_patterns = _patterns_near(_y_bucket(line.bbox))
+            if not line_patterns:
                 kept_lines.append(line)
+                continue
+
+            if any(_matches(text, rp) for rp in line_patterns):
+                continue
+
+            kept_spans = []
+            stripped_any = False
+            for span in line.spans:
+                span_text = span.text.strip()
+                if not span_text:
+                    kept_spans.append(span)
+                    continue
+                span_patterns = _patterns_near(_y_bucket(span.bbox))
+                if any(_matches(span_text, rp) for rp in span_patterns):
+                    stripped_any = True
+                    continue
+                kept_spans.append(span)
+
+            if not any(sp.text.strip() for sp in kept_spans):
+                continue
+
+            kept_lines.append(
+                replace(line, spans=kept_spans) if stripped_any else line)
+
         if kept_lines:
-            result.append(Block(
-                lines=kept_lines,
-                bbox=block.bbox,
-                page_num=block.page_num,
-            ))
+            result.append(replace(block, lines=kept_lines))
     return result
 
 
