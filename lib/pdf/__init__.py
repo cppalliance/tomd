@@ -1,6 +1,7 @@
 """PDF to Markdown converter - pipeline entry point."""
 
 import logging
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -20,6 +21,43 @@ from ..toc import find_toc_indices
 __all__ = ["convert_pdf"]
 
 _log = logging.getLogger(__name__)
+
+_STANDALONE_PAGE_RE = re.compile(r'^\d{1,4}$')
+_TOC_X_TOLERANCE = 5.0
+
+
+def _toc_structural_hints(sections) -> list[bool]:
+    """Mark sections that structurally resemble TOC entries.
+
+    A section qualifies when its second non-empty text line is a bare page
+    number AND its x coordinate clusters with other such candidates (the
+    right-aligned page-number column). Used as a fallback for headingless
+    wording papers where find_toc_indices would otherwise get an empty
+    headings set.
+    """
+    from .types import Section as _Section  # local to avoid circular at module level
+
+    candidates: list[tuple[int, float | None]] = []
+    for i, sec in enumerate(sections):
+        lines = [l.strip() for l in sec.text.split("\n") if l.strip()]
+        if len(lines) >= 2 and _STANDALONE_PAGE_RE.match(lines[1]):
+            x = None
+            non_empty = [ln for ln in sec.lines if ln.text.strip()]
+            if len(non_empty) >= 2 and non_empty[1].spans:
+                x = non_empty[1].spans[0].bbox[0]
+            candidates.append((i, x))
+
+    if not candidates:
+        return [False] * len(sections)
+
+    xs = sorted(x for _, x in candidates if x is not None)
+    med_x = xs[len(xs) // 2] if xs else None
+
+    result = [False] * len(sections)
+    for i, x in candidates:
+        if med_x is None or x is None or abs(x - med_x) <= _TOC_X_TOLERANCE:
+            result[i] = True
+    return result
 
 
 def _get_page0_text_colors(page) -> dict[float, float]:
@@ -177,7 +215,8 @@ def convert_pdf(path: Path) -> tuple[str, str | None]:
     texts = [sec.text.split("\n")[0].strip() for sec in sections]
     heading_texts = {sec.text.split("\n")[0].strip()
                      for sec in sections if sec.kind == SectionKind.HEADING}
-    toc_indices = find_toc_indices(texts, heading_texts)
+    structural_hints = _toc_structural_hints(sections) if not heading_texts else None
+    toc_indices = find_toc_indices(texts, heading_texts, structural_hints)
     if toc_indices:
         sections = [s for i, s in enumerate(sections) if i not in toc_indices]
 

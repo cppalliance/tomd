@@ -40,6 +40,8 @@ def detect_generator(soup: BeautifulSoup) -> str:
     addr = soup.find("address")
     if addr:
         return "hand-written"
+    if soup.find("div", class_="wg21-head"):
+        return "wg21"
     return "unknown"
 
 
@@ -58,6 +60,8 @@ def extract_metadata(soup: BeautifulSoup, generator: str) -> dict:
         return _extract_bikeshed_metadata(soup)
     if generator == "hand-written":
         return _extract_handwritten_metadata(soup)
+    if generator == "wg21":
+        return _extract_wg21_metadata(soup)
     return _extract_generic_metadata(soup)
 
 
@@ -247,6 +251,65 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
     return metadata
 
 
+# Canonical field names mapped to the exact strings produced by _normalize_label().
+# A <dt> or table header matches a field when its normalized text is in the synonym set.
+_FIELD_SYNONYMS: dict[str, frozenset[str]] = {
+    "document": frozenset({
+        "document number", "document no", "doc no", "doc. no.", "doc", "number",
+    }),
+    "date":     frozenset({"date", "revision date"}),
+    "audience": frozenset({"audience", "subgroup"}),
+    "reply-to": frozenset({"reply to", "reply-to", "author", "authors", "editor", "editors"}),
+}
+
+
+def _match_field(label: str) -> str | None:
+    """Map a metadata label to its canonical field name, or None if unrecognized."""
+    norm = _normalize_label(label)
+    for field, synonyms in _FIELD_SYNONYMS.items():
+        if norm in synonyms:
+            return field
+    return None
+
+
+def _extract_wg21_metadata(soup: BeautifulSoup) -> dict:
+    """Extract metadata from papers using the wg21 cow-tool generator.
+
+    Reads the title from the first <h1> inside <div class="wg21-head"> and
+    the remaining fields from the accompanying <dl> definition list.
+    """
+    container = soup.find("div", class_="wg21-head")
+    if not container:
+        return {}
+    metadata: dict = {}
+    h1 = container.find("h1")
+    if h1:
+        metadata["title"] = h1.get_text(strip=True)
+    dl = container.find("dl")
+    if not dl:
+        return metadata
+    for dt, dd in zip(dl.find_all("dt"), dl.find_all("dd")):
+        field = _match_field(dt.get_text(strip=True))
+        if field is None:
+            continue
+        value = dd.get_text(strip=True)
+        if field == "document":
+            m = DOC_NUM_RE.search(value)
+            if m:
+                metadata["document"] = m.group(0).upper()
+        elif field == "date":
+            m = DATE_RE.search(value)
+            if m:
+                metadata["date"] = m.group(0)
+        elif field == "reply-to":
+            authors = parse_author_lines([value])
+            if authors:
+                metadata["reply-to"] = authors
+        else:
+            metadata[field] = value
+    return metadata
+
+
 def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
     """Fallback: try common patterns."""
     metadata: dict = {}
@@ -313,6 +376,12 @@ def strip_boilerplate(soup: BeautifulSoup, generator: str) -> list[str]:
             addr.decompose()
         for table in soup.find_all("table", class_="header"):
             table.decompose()
+
+    if generator == "wg21":
+        for el in soup.find_all("div", class_="wg21-head"):
+            el.decompose()
+        for el in soup.find_all("div", class_="toc"):
+            el.decompose()
 
     if generator == "unknown":
         problems.append(

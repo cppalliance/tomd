@@ -28,6 +28,10 @@ def convert_html(path: Path | os.PathLike[str]) -> tuple[str, str | None]:
 
     metadata = _extract.extract_metadata(soup, generator)
     problems = _extract.strip_boilerplate(soup, generator)
+    # Suppress the "unknown generator" warning when extraction produced usable
+    # metadata - the generic extractor handled it well enough.
+    if generator == "unknown" and metadata:
+        problems = [p for p in problems if "Unrecognized" not in p]
 
     body_md = _render.render_body(soup, generator)
 

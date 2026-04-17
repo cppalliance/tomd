@@ -1,6 +1,7 @@
 """Tests for lib.toc."""
 
 from lib.toc import find_toc_indices
+from lib.pdf.types import Span, Line, Block, Section, SectionKind
 
 
 def test_find_toc_strips_dot_leaders():
@@ -81,3 +82,82 @@ def test_find_toc_empty_inputs():
     assert find_toc_indices([], set()) == set()
     assert find_toc_indices(["x"], set()) == set()
     assert find_toc_indices([], {"x"}) == set()
+
+
+# ---------------------------------------------------------------------------
+# Structural hints fallback (headingless wording papers)
+# ---------------------------------------------------------------------------
+
+def _make_toc_section(title: str, page: str, x: float = 400.0) -> "Section":
+    """Build a Section whose text has a bare page number on the second line."""
+    page_span = Span(text=page, bbox=(x, 0, x + 20, 10))
+    page_line = Line(spans=[page_span])
+    title_span = Span(text=title)
+    title_line = Line(spans=[title_span])
+    return Section(
+        kind=SectionKind.WORDING_ADD,
+        text=f"{title}\n{page}",
+        lines=[title_line, page_line],
+    )
+
+
+def _hints(sections) -> "list[bool]":
+    from lib.pdf.__init__ import _toc_structural_hints
+    return _toc_structural_hints(sections)
+
+
+class TestStructuralTocHints:
+    def test_basic_run_detected(self):
+        secs = [
+            _make_toc_section("Introduction", "5"),
+            _make_toc_section("Motivation", "8"),
+            _make_toc_section("Design", "12"),
+        ]
+        hints = _hints(secs)
+        indices = find_toc_indices(
+            [s.text for s in secs], set(), hints)
+        assert {0, 1, 2} == indices
+
+    def test_too_few_entries_not_detected(self):
+        secs = [_make_toc_section("A", "1"), _make_toc_section("B", "2")]
+        hints = _hints(secs)
+        indices = find_toc_indices([s.text for s in secs], set(), hints)
+        assert len(indices) == 0
+
+    def test_non_toc_section_excluded(self):
+        body = Section(kind=SectionKind.PARAGRAPH,
+                       text="This is body text with no page number.")
+        secs = [
+            _make_toc_section("Introduction", "5"),
+            _make_toc_section("Motivation", "8"),
+            _make_toc_section("Design", "12"),
+            body,
+        ]
+        hints = _hints(secs)
+        indices = find_toc_indices([s.text for s in secs], set(), hints)
+        assert 3 not in indices
+
+    def test_headings_present_ignores_structural_hints(self):
+        """When headings are non-empty the structural fallback is not used."""
+        secs = [_make_toc_section("X", "1"), _make_toc_section("Y", "2")]
+        # Normally 2 entries would not form a TOC via structural hints.
+        # With headings supplied they should also not form a TOC (too few).
+        hints = _hints(secs)
+        indices = find_toc_indices(
+            [s.text for s in secs], {"X", "Y"}, hints)
+        assert len(indices) == 0
+
+    def test_outlier_x_position_excluded_from_hints(self):
+        """A candidate whose x differs from the cluster is not marked as a hint."""
+        from lib.pdf.__init__ import _toc_structural_hints, _TOC_X_TOLERANCE
+        normal_x = 400.0
+        outlier_x = normal_x + _TOC_X_TOLERANCE + 20.0
+        secs = [
+            _make_toc_section("A", "1", x=normal_x),
+            _make_toc_section("B", "2", x=normal_x),
+            _make_toc_section("C", "3", x=outlier_x),
+        ]
+        hints = _toc_structural_hints(secs)
+        assert hints[0] is True
+        assert hints[1] is True
+        assert hints[2] is False

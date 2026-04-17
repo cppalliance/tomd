@@ -82,3 +82,35 @@ def test_convert_html_front_matter_then_body_separator(tmp_path):
     before = md[:idx]
     assert before.rstrip().endswith("---")
     assert "\n\n" in md[: idx + 1]
+
+
+def test_unknown_no_warning_when_table_metadata_found(tmp_path):
+    """unknown generator: warning suppressed when metadata was extracted."""
+    html = """<!DOCTYPE html><html><body>
+<h1>Some Paper</h1>
+<table>
+  <tr><th>Document number:</th><td>P9001R0</td></tr>
+  <tr><th>Date:</th><td>2026-04-01</td></tr>
+</table>
+<p>Body text here.</p>
+</body></html>"""
+    path = _write(tmp_path, "unknown_meta.html", html)
+    md, prompts = convert_html(path)
+    assert prompts is None, "warning should be suppressed when metadata was found"
+    assert "P9001R0" in md
+
+
+def test_unknown_warning_preserved_when_no_metadata(tmp_path):
+    """unknown generator, no recognizable metadata: warning IS emitted.
+
+    This is the failure-detection test - extraction failed, and tomd correctly
+    signals it via the prompts file so the user knows.
+    """
+    html = """<!DOCTYPE html><html><body>
+<p>This has no document number, date, or any WG21 metadata at all.</p>
+<p>Just pure prose with nothing recognizable.</p>
+</body></html>"""
+    path = _write(tmp_path, "unknown_no_meta.html", html)
+    md, prompts = convert_html(path)
+    assert prompts is not None, "warning should be present when extraction failed"
+    assert "Unrecognized" in prompts

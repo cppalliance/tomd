@@ -192,28 +192,48 @@ def _render_code_block(sec: Section) -> str:
     return f"```{lang}\n{code}\n```"
 
 
-def _render_wording_span(span: Span) -> str:
-    """Render a span with wording role wrapping."""
-    text = span.text
-    if not text.strip():
-        return text
-    if span.wording_role == "ins":
-        return f"<ins>{text}</ins>"
-    if span.wording_role == "del":
-        return f"<del>{text}</del>"
-    return text
-
-
 def _render_wording_line(line: Line) -> str:
-    """Render a line with wording role markup."""
-    parts = []
+    """Render a wording line, merging consecutive same-role spans.
+
+    Whitespace-only spans between two same-role spans are absorbed into
+    the group; whitespace between different roles is emitted as-is.
+    Both ins and del use the role name directly as the HTML tag.
+    """
+    def _render_group(role: str | None, spans: list[Span]) -> str:
+        text = "".join(s.text for s in spans)
+        if role in ("ins", "del"):
+            s = text.strip()
+            lead = text[:len(text) - len(text.lstrip())]
+            trail = text[len(text.rstrip()):]
+            return f"{lead}<{role}>{s}</{role}>{trail}"
+        return "".join(
+            f"`{s.text.strip()}`" if s.monospace and s.text.strip() else s.text
+            for s in spans
+        )
+
+    parts: list[str] = []
+    group: list[Span] = []
+    group_role: str | None = None
+    ws_buf: list[Span] = []
+
     for span in line.spans:
-        if span.wording_role:
-            parts.append(_render_wording_span(span))
-        elif span.monospace and span.text.strip():
-            parts.append(f"`{span.text.strip()}`")
+        role = span.wording_role if span.text.strip() else None
+        if role is None:
+            ws_buf.append(span)
+        elif role == group_role:
+            group.extend(ws_buf)
+            ws_buf.clear()
+            group.append(span)
         else:
-            parts.append(span.text)
+            if group:
+                parts.append(_render_group(group_role, group))
+            parts.extend(s.text for s in ws_buf)
+            ws_buf.clear()
+            group_role, group = role, [span]
+
+    if group:
+        parts.append(_render_group(group_role, group))
+    parts.extend(s.text for s in ws_buf)
     return "".join(parts)
 
 

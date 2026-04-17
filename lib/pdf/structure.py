@@ -763,6 +763,11 @@ def _detect_code_blocks(sections: list[Section]) -> list[Section]:
                 mono_run.append(sec)
                 continue
 
+        if sec.kind == SectionKind.UNCERTAIN and mono_run:
+            if _section_is_all_monospace(sec):
+                mono_run.append(sec)
+                continue
+
         if mono_run:
             flush_mono()
 

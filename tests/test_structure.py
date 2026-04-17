@@ -245,6 +245,43 @@ class TestExtractMetadataMutation:
         assert "Some leftover" in remaining[0].text
 
 
+class TestCodeBlockUncertainMerge:
+    """Uncertain sections that are all-monospace bridge consecutive code runs."""
+
+    def _mono_section(self, text: str, kind=SectionKind.PARAGRAPH) -> Section:
+        span = Span(text=text, monospace=True)
+        line = Line(spans=[span])
+        return Section(kind=kind, text=text, lines=[line],
+                       confidence=Confidence.HIGH)
+
+    def test_uncertain_mono_between_code_sections_merged(self):
+        """An all-monospace UNCERTAIN section between two code runs is absorbed."""
+        top = self._mono_section("void f() {")
+        mid = self._mono_section("    return 0;", kind=SectionKind.UNCERTAIN)
+        mid.confidence = Confidence.UNCERTAIN
+        bot = self._mono_section("}")
+
+        _, sections = structure_sections([top, mid, bot], has_title=False)
+        code = [s for s in sections if s.kind == SectionKind.CODE]
+        assert len(code) == 1, "expected one merged code block"
+        assert "void f()" in code[0].text
+        assert "return 0" in code[0].text
+        assert "}" in code[0].text
+
+    def test_uncertain_non_mono_between_code_sections_not_merged(self):
+        """An UNCERTAIN section with mixed content breaks the code run."""
+        top = self._mono_section("void f() {")
+        mid_span = Span(text="prose text", monospace=False)
+        mid = Section(kind=SectionKind.UNCERTAIN, text="prose text",
+                      lines=[Line(spans=[mid_span])],
+                      confidence=Confidence.UNCERTAIN)
+        bot = self._mono_section("}")
+
+        _, sections = structure_sections([top, mid, bot], has_title=False)
+        code = [s for s in sections if s.kind == SectionKind.CODE]
+        assert len(code) == 2, "mixed uncertain should not be absorbed"
+
+
 class TestBlockFontSize:
     def test_line_count_voting(self):
         """Block.font_size uses line-count voting, not character weighting."""

@@ -52,17 +52,27 @@ def _is_toc_label(text: str) -> bool:
     return normalized in _TOC_LABELS
 
 
-def find_toc_indices(texts: list[str], headings: set[str]) -> set[int]:
+def find_toc_indices(
+    texts: list[str],
+    headings: set[str],
+    structural_hints: list[bool] | None = None,
+) -> set[int]:
     """Return indices of entries that form a Table of Contents.
 
     texts: ordered list of section texts from the document
     headings: set of known heading texts to match against
+    structural_hints: optional per-section booleans marking entries that
+        look like TOC entries by structure (standalone page number on the
+        second line at a consistent x position). Used as a fallback when
+        headings is empty, e.g. in headingless wording-only papers.
 
-    Both are normalized before comparison. Detects runs of 3+
-    consecutive entries that match headings. Also includes any
-    "Table of Contents" label immediately preceding a run.
+    Both texts and headings are normalized before comparison. Detects runs
+    of 3+ consecutive matches. Also includes any "Table of Contents" label
+    immediately preceding a run.
     """
-    if not texts or not headings:
+    if not texts:
+        return set()
+    if not headings and not structural_hints:
         return set()
 
     norm_headings = {_normalize_toc_entry(h) for h in headings}
@@ -79,7 +89,14 @@ def find_toc_indices(texts: list[str], headings: set[str]) -> set[int]:
 
     matches = []
     for i, text in enumerate(texts):
-        matches.append(_matches_heading(_first_line(text)))
+        if norm_headings:
+            matches.append(_matches_heading(_first_line(text)))
+        else:
+            matches.append(
+                bool(structural_hints
+                     and i < len(structural_hints)
+                     and structural_hints[i])
+            )
 
     # Find the first match - everything before it is pre-TOC (title, metadata)
     first_match = -1

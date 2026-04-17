@@ -2,6 +2,7 @@
 
 from lib.html.extract import (
     parse_html, detect_generator, extract_metadata, strip_boilerplate,
+    _extract_generic_metadata, _extract_wg21_metadata, _match_field,
 )
 
 
@@ -383,3 +384,192 @@ class TestStripBoilerplate:
         assert soup.find("address") is None
         assert soup.find("table", class_="header") is None
         assert soup.find("p").get_text() == "Body"
+
+
+# ---------------------------------------------------------------------------
+# wg21 generator (cow-tool / wg21-head format)
+# ---------------------------------------------------------------------------
+
+def _wg21_html(extra_dl: str = "", title: str = "My Paper: Title") -> str:
+    return f"""
+    <div class="wg21-head">
+      <h1>{title}</h1>
+      <dl>
+        <dt>Document number:</dt><dd>P9999R0</dd>
+        <dt>Date:</dt><dd>2026-01-15</dd>
+        <dt>Audience:</dt><dd>EWG</dd>
+        <dt>Reply-to:</dt><dd>Jane Doe &lt;jane@example.com&gt;</dd>
+        {extra_dl}
+      </dl>
+      <hr>
+    </div>
+    <h2>Introduction</h2><p>Body text.</p>
+    """
+
+
+class TestDetectGeneratorWg21:
+    def test_wg21_head_detected(self):
+        soup = parse_html('<div class="wg21-head"><h1>T</h1></div>')
+        assert detect_generator(soup) == "wg21"
+
+    def test_without_wg21_head_stays_unknown(self):
+        soup = parse_html("<html><body><p>Hello</p></body></html>")
+        assert detect_generator(soup) != "wg21"
+
+    def test_wg21_takes_priority_over_unknown(self):
+        # No mpark/bikeshed/hackmd/address signals, but has wg21-head
+        soup = parse_html('<div class="wg21-head"><dl></dl></div>')
+        assert detect_generator(soup) == "wg21"
+
+
+class TestExtractWg21Metadata:
+    def test_all_fields(self):
+        meta = _extract_wg21_metadata(parse_html(_wg21_html()))
+        assert meta["document"] == "P9999R0"
+        assert meta["date"] == "2026-01-15"
+        assert meta["audience"] == "EWG"
+        assert meta["title"] == "My Paper: Title"
+        assert any("jane@example.com" in a for a in meta["reply-to"])
+
+    def test_doc_no_label_variation(self):
+        """'Doc. No.:' (n5034-style) maps to document field via _normalize_label."""
+        html = """
+        <div class="wg21-head">
+          <dl>
+            <dt>Doc. No.:</dt><dd>N5034</dd>
+            <dt>Date:</dt><dd>2026-03-01</dd>
+            <dt>Audience:</dt><dd>All</dd>
+          </dl>
+        </div>
+        """
+        meta = _extract_wg21_metadata(parse_html(html))
+        assert meta.get("document") == "N5034"
+
+    def test_reply_to_plain_name_no_email(self):
+        html = """
+        <div class="wg21-head">
+          <dl>
+            <dt>Document number:</dt><dd>P1R0</dd>
+            <dt>Reply-to:</dt><dd>Alice Smith</dd>
+          </dl>
+        </div>
+        """
+        meta = _extract_wg21_metadata(parse_html(html))
+        assert "Alice Smith" in meta.get("reply-to", [])
+
+    def test_unknown_labels_ignored(self):
+        html = """
+        <div class="wg21-head">
+          <dl>
+            <dt>Document number:</dt><dd>P1234R0</dd>
+            <dt>GitHub Issue:</dt><dd>wg21.link/P1234/github</dd>
+            <dt>Source:</dt><dd>github.com/example</dd>
+          </dl>
+        </div>
+        """
+        meta = _extract_wg21_metadata(parse_html(html))
+        assert "github issue" not in meta
+        assert "source" not in meta
+        assert meta.get("document") == "P1234R0"
+
+    def test_no_container_returns_empty(self):
+        """Graceful failure: no wg21-head at all."""
+        html = "<html><body><p>No metadata here.</p></body></html>"
+        assert _extract_wg21_metadata(parse_html(html)) == {}
+
+    def test_missing_dl_returns_title_only(self):
+        html = '<div class="wg21-head"><h1>Only Title</h1></div>'
+        meta = _extract_wg21_metadata(parse_html(html))
+        assert meta.get("title") == "Only Title"
+        assert "document" not in meta
+
+    def test_malformed_dl_no_crash(self):
+        """More <dt> than <dd> - zip stops at the shorter list, no exception."""
+        html = """
+        <div class="wg21-head">
+          <dl>
+            <dt>Document number:</dt><dd>P1234R0</dd>
+            <dt>Date:</dt>
+          </dl>
+        </div>
+        """
+        meta = _extract_wg21_metadata(parse_html(html))
+        assert meta.get("document") == "P1234R0"  # first pair extracted fine
+
+
+class TestStripBoilerplateWg21:
+    def test_removes_wg21_head(self):
+        soup = parse_html(_wg21_html())
+        strip_boilerplate(soup, "wg21")
+        assert soup.find("div", class_="wg21-head") is None
+
+    def test_removes_toc_div(self):
+        html = '<div class="wg21-head"></div><div class="toc"><a>1</a></div><p>Body</p>'
+        soup = parse_html(html)
+        strip_boilerplate(soup, "wg21")
+        assert soup.find("div", class_="toc") is None
+
+    def test_body_content_preserved(self):
+        soup = parse_html(_wg21_html())
+        strip_boilerplate(soup, "wg21")
+        assert "Body text." in soup.get_text()
+
+    def test_wg21_generates_no_problems(self):
+        soup = parse_html(_wg21_html())
+        problems = strip_boilerplate(soup, "wg21")
+        assert problems == []
+
+
+# ---------------------------------------------------------------------------
+# Generic extractor baseline
+# ---------------------------------------------------------------------------
+
+class TestExtractGenericMetadata:
+    def test_document_number_label(self):
+        html = """
+        <table>
+          <tr><th>Document number:</th><td>P1234R5</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("document") == "P1234R5"
+
+    def test_doc_no_variation(self):
+        """n5034-style 'Doc. No.:' label."""
+        html = """
+        <table border="1">
+          <tr><th>Doc. No.:</th><td>N5034</td></tr>
+          <tr><th>Date:</th><td>2026-03-01</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("document") == "N5034"
+        assert meta.get("date") == "2026-03-01"
+
+    def test_date_label(self):
+        html = "<table><tr><th>Date:</th><td>2025-11-01</td></tr></table>"
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("date") == "2025-11-01"
+
+    def test_audience_label(self):
+        html = "<table><tr><th>Audience:</th><td>SG1</td></tr></table>"
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("audience") == "SG1"
+
+    def test_no_table_returns_empty(self):
+        """Known failure case: plain prose with no metadata table."""
+        html = "<html><body><h1>Title</h1><p>Body text only.</p></body></html>"
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta == {} or "document" not in meta
+
+    def test_unrecognized_table_labels_return_empty(self):
+        """Table exists but no WG21-recognizable labels."""
+        html = """
+        <table>
+          <tr><th>Color</th><td>Red</td></tr>
+          <tr><th>Size</th><td>Large</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert "document" not in meta
+        assert "date" not in meta
