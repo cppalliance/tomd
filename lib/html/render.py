@@ -3,7 +3,7 @@
 import re
 import urllib.parse
 
-from bs4 import BeautifulSoup, Tag, NavigableString
+from bs4 import BeautifulSoup, Comment, Tag, NavigableString
 
 from .. import strip_format_chars, SECTION_NUM_PREFIX_RE, ALLOWED_LINK_SCHEMES
 
@@ -26,6 +26,8 @@ def render_body(soup: BeautifulSoup, generator: str) -> str:
 def _render_children(element, parts: list[str], generator: str):
     """Render each child of element, appending Markdown strings to parts."""
     for child in element.children:
+        if isinstance(child, Comment):
+            continue
         if isinstance(child, NavigableString):
             text = str(child).strip()
             if text:
@@ -287,6 +289,8 @@ def _inline_text_excluding(el: Tag, skip_classes: frozenset[str]) -> str:
     """Like _inline_text but skips child elements with any class in skip_classes."""
     parts = []
     for child in el.children:
+        if isinstance(child, Comment):
+            continue
         if isinstance(child, NavigableString):
             parts.append(str(child))
         elif isinstance(child, Tag):
@@ -301,6 +305,8 @@ def _inline_text(el: Tag) -> str:
     """Convert an element's content to inline Markdown text."""
     parts = []
     for child in el.children:
+        if isinstance(child, Comment):
+            continue
         if isinstance(child, NavigableString):
             parts.append(str(child))
         elif isinstance(child, Tag):

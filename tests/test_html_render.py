@@ -449,3 +449,54 @@ class TestTransparentInline:
             "mpark",
         )
         assert "m" in md and "k" in md
+
+
+class TestHtmlComments:
+    def test_comment_content_not_rendered(self):
+        """HTML comments must never appear in Markdown output."""
+        html = "<p>Visible text.</p><!-- This comment should be invisible -->"
+        md = render_body(parse_html(html), "mpark")
+        assert "Visible text." in md
+        assert "comment" not in md
+        assert "invisible" not in md
+
+    def test_comment_with_html_tags_not_rendered(self):
+        """Commented-out HTML blocks (e.g. draft sections) must not leak into output."""
+        html = (
+            "<p>Before.</p>"
+            "<!-- <h2>Draft Section</h2><p>Draft content</p> -->"
+            "<p>After.</p>"
+        )
+        md = render_body(parse_html(html), "mpark")
+        assert "Before." in md
+        assert "After." in md
+        assert "Draft Section" not in md
+        assert "Draft content" not in md
+
+    def test_comment_with_entities_not_rendered(self):
+        """Entities inside comments (e.g. &lt; in commented-out code) must not appear."""
+        html = (
+            "<p>Intro.</p>"
+            "<!-- <pre>template &lt;class T&gt; void f();</pre> -->"
+            "<p>Body.</p>"
+        )
+        md = render_body(parse_html(html), "mpark")
+        assert "Intro." in md
+        assert "Body." in md
+        assert "&lt;" not in md
+        assert "&gt;" not in md
+        assert "template" not in md
+
+    def test_comment_between_inline_elements_not_rendered(self):
+        """Comments inline between spans must not insert text into the output."""
+        html = "<p>Hello<!-- drop this --> world</p>"
+        md = render_body(parse_html(html), "mpark")
+        assert "Hello world" in md
+        assert "drop this" not in md
+
+    def test_comment_in_heading_not_rendered(self):
+        """Comments inside headings are stripped."""
+        html = "<h2>Real Title<!-- draft annotation --></h2>"
+        md = render_body(parse_html(html), "mpark")
+        assert "## Real Title" in md
+        assert "draft annotation" not in md
