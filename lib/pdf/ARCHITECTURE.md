@@ -136,9 +136,10 @@ Enums:
 
 **T14. Table detection (two-signal)**
 - `table.py:detect_tables`
-- Signal 1 (block structure): blocks with 2+ lines where x-starts have gaps > 50 units are columnar. Consecutive matching-column blocks (within 10-unit tolerance) form a table run (min 2 rows).
-- Signal 2 (geometric column profile): pre-pass over all blocks collects x positions that co-occur with other x positions in the same y-band across 2+ y-bands. Body text (alone in its y-band) never qualifies; only genuine table column x positions are selected.
-- Orphan absorption: single-line blocks whose x0 matches a confirmed column are "orphans" (wrapped cell first lines). Absorbed when the following block is a full table row (one-block lookahead confirms continuation). Orphan partial rows are merged into the following row's first cell so multi-line cells render as a single cell string.
+- Signal 1 (block structure): blocks with 2+ lines where x-starts have gaps > 50 units are columnar. Consecutive matching-column blocks (within 10-unit tolerance) form a table run (min 2 rows). Works across page boundaries: blocks from consecutive pages with matching columns form one table.
+- Signal 2 (geometric column profile): pre-pass over all blocks collects x positions that co-occur with other x positions in the same y-band across 2+ y-bands. Y-bands are scoped per page. Body text (alone in its y-band) never qualifies; only genuine table column x positions are selected.
+- Orphan absorption: single-line blocks whose x0 matches a confirmed column are "orphans" (wrapped cell first lines split off by MuPDF). Absorbed when the following block is a full table row (one-block lookahead confirms continuation). Three guards prevent false positives: (1) only single-line blocks qualify; (2) orphan must be on the same page as the last confirmed table row; (3) the confirming lookahead block must also be on the same page as the orphan. Orphan partial rows are merged into the following row's first cell so multi-line cells render as a single cell string.
+- Known gap: a wrapped cell whose continuation line is the first block on the next page will not be absorbed (cross-page orphan). The table will end at the last same-page row and the orphan will appear in the output as an uncertain region.
 - Extracted as TABLE sections with HIGH confidence
 
 **T15. Spatial table exclusion**
@@ -306,7 +307,7 @@ Enums:
 | `wording.py` | Wording section detection (ins/del) | `classify_wording`, `collect_line_drawings` | 222 |
 | `cleanup.py` | Text cleanup, header/footer, hidden regions | `detect_repeating`, `strip_repeating`, `dehyphenate`, `strip_format_chars`, `normalize_whitespace`, `find_hidden_regions`, `strip_hidden_blocks`, `cleanup_text` | 367 |
 | `spans.py` | Style boundary normalization | `normalize_spans` | 143 |
-| `table.py` | Table detection and exclusion | `detect_tables`, `exclude_table_regions` | 144 |
+| `table.py` | Two-signal table detection and exclusion | `detect_tables`, `exclude_table_regions` | ~200 |
 | `structure.py` | Comparison, heading/list/code classification | `compare_extractions`, `structure_sections` | 792 |
 | `emit.py` | Markdown and prompts generation | `emit_markdown`, `emit_prompts` | 381 |
 | `wg21.py` | WG21 metadata extraction | `extract_metadata_from_blocks` | 210 |

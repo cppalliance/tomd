@@ -13,6 +13,10 @@ Orphan absorption: single-line blocks whose x0 matches a confirmed column are
 into the table run when the block following them is a confirmed table row
 (one-block lookahead). Absorbed orphans are merged into the next row's first
 cell so multi-line cells produce a single cell string.
+
+Known gap: absorption is same-page only. A wrapped cell whose continuation
+line is the first block on the next page is not absorbed - the table stops
+at the last same-page row and the orphan appears in an uncertain region.
 """
 
 import logging
