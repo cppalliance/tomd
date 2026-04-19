@@ -95,15 +95,15 @@ class TestMajorityFilter:
         classify_wording([block], _strikethrough_at(55))
         assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
 
-    def test_minority_green_not_classified(self):
-        """Inline green code identifier on a black line is not ins."""
+    def test_minority_green_on_black_classified(self):
+        """Green span on an otherwise-black line is wording (partial-line pattern)."""
         black = Span(text="the function returns the value", color=0,
                      bbox=(0, 50, 300, 60))
         green_code = Span(text="T", color=_GREEN, bbox=(300, 50, 315, 60))
         line = Line(spans=[black, green_code])
         block = Block(lines=[line] * 6, page_num=0)
         classify_wording([block], {})
-        assert all(s.wording_role is None for ln in block.lines for s in ln.spans)
+        assert any(s.wording_role == "ins" for ln in block.lines for s in ln.spans)
 
     def test_majority_green_line_classified(self):
         """When most of a line is green, it's wording ins."""

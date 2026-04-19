@@ -14,6 +14,11 @@ from .mono import classify_monospace
 
 _log = logging.getLogger(__name__)
 
+_MUPDF_BOLD_BIT = 1 << 4
+_MUPDF_ITALIC_BIT = 1 << 1
+_SORT_BAND_RATIO = 0.5
+_SORT_BAND_MIN = 1.0
+
 
 def extract_mupdf(page, page_num: int) -> list[Block]:
     """Extract text using MuPDF's built-in block/line/span hierarchy.
@@ -39,8 +44,8 @@ def extract_mupdf(page, page_num: int) -> list[Block]:
                     text=text,
                     font_name=font,
                     font_size=sp.get("size", 0.0),
-                    bold=bool(flags & (1 << 4)),
-                    italic=bool(flags & (1 << 1)),
+                    bold=bool(flags & _MUPDF_BOLD_BIT),
+                    italic=bool(flags & _MUPDF_ITALIC_BIT),
                     monospace=classify_monospace(font),
                     bbox=tuple(sp.get("bbox", (0, 0, 0, 0))),
                     origin=tuple(sp.get("origin", (0, 0))),
@@ -83,8 +88,8 @@ def extract_spatial(page, page_num: int) -> list[Block]:
                 font_name = sp.get("font", "")
                 font_size = sp.get("size", 0.0)
                 flags = sp.get("flags", 0)
-                bold = bool(flags & (1 << 4))
-                italic = bool(flags & (1 << 1))
+                bold = bool(flags & _MUPDF_BOLD_BIT)
+                italic = bool(flags & _MUPDF_ITALIC_BIT)
                 color = sp.get("color", 0)
                 for ch in sp.get("chars", []):
                     c = ch.get("c", "")
@@ -99,7 +104,7 @@ def extract_spatial(page, page_num: int) -> list[Block]:
         return []
 
     avg_fs = sum(c[4] for c in chars) / len(chars)
-    half_height = max(avg_fs * 0.5, 1.0)
+    half_height = max(avg_fs * _SORT_BAND_RATIO, _SORT_BAND_MIN)
     chars.sort(key=lambda c: (round(c[1][1] / half_height), c[1][0]))
 
     blocks: list[Block] = []

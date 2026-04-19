@@ -213,6 +213,8 @@ def _join_cross_page(blocks: list[Block]) -> list[Block]:
     return result
 
 
+# Targets spaces and tabs only (not newlines); distinct from
+# structure._MULTI_SPACE_RE which targets all \s including newlines.
 _MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
 _NBSP = "\u00a0"
 

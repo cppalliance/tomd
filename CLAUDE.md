@@ -8,20 +8,23 @@ tomd is a hybrid PDF-and-HTML-to-Markdown converter. It uses deterministic text 
 
 Pipeline execution order:
 
-1. Per-page: dual extract (MuPDF + spatial) + edge items + link collection
+1. Per-page: dual extract (MuPDF + spatial) + edge items + link collection + hidden region scan + page 0 color extraction + line drawing collection
 2. Close document
-3. Readability check (early exit if garbage)
-4. Header/footer detection and stripping (both paths)
-5. Monospace propagation: spatial path's glyph-width classifications applied to MuPDF spans
-6. Wording detection: HSV color analysis + drawing decoration correlation for ins/del markup
-7. Text cleanup: NBSP, whitespace, dehyphenation, cross-page join (both paths)
-8. Span normalization: snap bold/italic boundaries to word edges (both paths)
-9. Table detection from MuPDF block positions; exclude table regions from spatial
-10. Dual-path comparison -> Sections (confident or uncertain per page)
-11. Merge table sections into position
-12. Structure: metadata extraction, heading/list/paragraph classification, position-based list detection, paragraph merging, code block detection, wording section detection, language label stripping, nesting validation
-13. TOC stripping (fuzzy match against headings)
-14. Emit .md + optional .prompts.md
+3. Slide-deck detection (early exit for landscape small-page presentations)
+4. Standards-draft detection (early exit for documents >= 200 pages)
+5. Hidden block stripping + readability check (early exit if garbage)
+6. Header/footer detection and stripping (both paths)
+7. Monospace propagation: spatial path's glyph-width classifications applied to MuPDF spans
+8. Wording detection: HSV color analysis + drawing decoration correlation for ins/del markup
+9. Text cleanup: NBSP, whitespace, dehyphenation, cross-page join (both paths)
+10. Span normalization: snap bold/italic boundaries to word edges (both paths)
+11. WG21 metadata extraction from page 0 blocks
+12. Table detection from MuPDF block positions; exclude table regions from spatial
+13. Dual-path comparison -> Sections (confident or uncertain per page)
+14. Merge table sections into position
+15. Structure: metadata extraction, heading/list/paragraph classification, position-based list detection, paragraph merging, code block detection, wording section detection, language label stripping, nesting validation
+16. TOC stripping (exact-match fast path + fuzzy match against headings)
+17. Emit .md + optional .prompts.md
 
 ## Multi-Signal Confidence (Critical)
 
@@ -99,11 +102,11 @@ Auto-resolution via `--llm` flag is deferred to v2. For v1, the tool produces a 
 
 ## File Map
 
-- `main.py` - CLI entry point. Argparse, glob expansion, output path logic, main(). No conversion logic.
+- `main.py` - CLI entry point. Argparse, glob expansion, output path logic, main(). Supports `--qa` mode with `--qa-json`, `--workers`, and `--timeout` flags for batch quality scoring. No conversion logic.
 - `lib/__init__.py` - Shared text utilities and constants for PDF and HTML converters: `ascii_escape` (kept for external use, no longer called in pipeline), `strip_format_chars`, `format_front_matter`, `parse_author_lines`, `ALLOWED_LINK_SCHEMES`, shared regex patterns (`EMAIL_RE`, `DATE_RE`, `DOC_NUM_RE`, `SECTION_NUM_PREFIX_RE`), and their reusable shape strings (`DOC_NUM_PATTERN`, `SECTION_NUM_PATTERN`) consumed by `lib/pdf/types.py` to build `DOC_FIELD_RE` and `SECTION_NUM_RE`.
 - `lib/similarity.py` - Dual-algorithm string similarity (SequenceMatcher + Jaccard). Per-algorithm thresholds, 200-char circuit breaker. Format-agnostic.
-- `lib/toc.py` - Table of Contents detection. Primary path: fuzzy-matches section texts against known headings. Fallback path (when no headings exist, e.g. wording-only papers): accepts pre-computed `structural_hints` list from the caller, identifying sections whose second non-empty line is a bare page number at a consistent right-aligned x position. Bridges small gaps. Format-agnostic - no dependency on PDF types.
-- `lib/pdf/__init__.py` - Exports `convert_pdf()`. Orchestrates the full pipeline in order. Includes monospace propagation, wording classification, page 0 color extraction via space-color proxy, and `_toc_structural_hints()` for headingless wording papers (standalone page numbers + x-position clustering). Output is UTF-8 Unicode - non-ASCII characters are emitted directly.
+- `lib/toc.py` - Table of Contents detection. Primary path: exact-match set lookup against known headings (O(1) per section). Fuzzy fallback (SequenceMatcher + Jaccard) only when heading count is below `_MAX_FUZZY_HEADINGS` (200). Fallback structural-hints path for headingless wording-only papers. Bridges small gaps. Format-agnostic.
+- `lib/pdf/__init__.py` - Exports `convert_pdf()` and `PipelineResult`. Orchestrates the full pipeline via `_run_pipeline()` which returns all intermediate data including skip status. Early exits: `_is_slide_deck` (landscape + small pages), `_is_standards_draft` (>= 200 pages). Includes monospace propagation, wording classification, page 0 color extraction via space-color proxy, and `_toc_structural_hints()` for headingless wording papers. Output is UTF-8 Unicode.
 - `lib/pdf/wording.py` - Three-layer wording detection. Layer 1: block-level color contamination filter (non-green/red/blue chromatic color = syntax-highlighted code, skip block). Layer 2: line-level majority filter (>50% of non-link characters must be green or red). Layer 3: green on majority line = ins; red + confirmed strikethrough drawing = del. Hyperlinks always excluded. Consecutive same-role spans merged into a single ins/del block at render time.
 - `lib/pdf/types.py` - Data classes (`Block`, `Span`, `Line`, `Section`, `PageEdgeItem`), enums (`Confidence`, `SectionKind`), named constants (all public, no underscore prefix), precompiled regex, `is_readable()`.
 - `lib/pdf/extract.py` - Dual extraction: `extract_mupdf()` (dict API) and `extract_spatial()` (rawdict + four spatial threshold branches). Link collection and attachment. Calls `classify_monospace` during span construction.
@@ -113,6 +116,7 @@ Auto-resolution via `--llm` flag is deferred to v2. For v1, the tool produces a 
 - `lib/pdf/table.py` - Two-signal table detection. Signal 1: MuPDF block/line columnar layout (x-gap > 50). Signal 2: geometric column profile (x positions co-occurring in the same y-band across 2+ rows). Orphan absorption for wrapped cell first lines (same-page only). Merges orphan partial rows into the next row's first cell. Extracts as high-confidence TABLE sections, excludes table regions from spatial path.
 - `lib/pdf/structure.py` - Dual-path comparison, metadata extraction, heading intelligence (multi-signal, `heading_confidence` public), position-based list detection (x-coordinates), paragraph merging, code block detection (including absorption of all-monospace UNCERTAIN sections to resolve code blocks split across page boundaries), language label detection, nesting validation.
 - `lib/pdf/emit.py` - Markdown generation (headings, paragraphs, code blocks, tables, nested lists) with span-level formatting (inline code, bold, italic, links). Prompts file generation for uncertain regions.
+- `lib/pdf/qa.py` - Markdown-based quality assurance scoring. `compute_metrics()` takes ONLY a Markdown string — no page count, no file format, no pipeline internals. All signals are derived from the text via mistune AST parsing: headings, code blocks, front-matter fields, uncertain region markers, unfenced code detection. This constraint is intentional: it keeps scoring format-agnostic and prevents coupling to the converter. Do not add parameters that leak converter state into the scorer. `run_qa_report()` batch-processes files with parallel workers and straggler timeout. Invoked via `tomd --qa`.
 - `lib/html/__init__.py` - Exports `convert_html()`. Six-step HTML pipeline: parse, detect generator, extract metadata, strip boilerplate, render DOM, assemble output.
 - `lib/html/extract.py` - Generator detection (mpark, bikeshed, hand-written, hackmd, wg21, unknown). Per-generator metadata extraction. `_FIELD_SYNONYMS` + `_match_field` provide a shared fuzzy label matcher reused across extractors. Boilerplate stripping per generator. Six generator families supported.
 - `lib/html/render.py` - Recursive DOM-to-Markdown traversal. Handles headings, paragraphs, lists, tables, code blocks, wording divs, blockquotes, and inline formatting.
@@ -143,3 +147,4 @@ These extend general rules in the root CLAUDE.md with project-specific instances
 - Font metadata thresholds (what counts as "larger than body," "horizontal close," etc.) must be named constants, not magic numbers scattered in code.
 - The four spatial threshold branches (PARA_SPACING, LINE_SPACING, WORD_GAP for dy, WORD_GAP for dx) are the foundation of `extract_spatial`. Changes to these constants affect everything downstream. Test thoroughly.
 - Regex patterns for section numbers, known section names, list markers, and metadata fields must be precompiled at module level and defined in one place.
+- Runtime dependencies are `pymupdf`, `beautifulsoup4`, and `mistune`. All three must be declared in `pyproject.toml`.

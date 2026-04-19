@@ -26,7 +26,11 @@ _TITLE_SIZE_RATIO = 1.2
 _HEADING_MAX_WORDS = 12
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+# Quick-strip pattern for removing email addresses from reply-to values.
+# Intentionally broader than lib.EMAIL_RE which is for precise matching.
 _EMAIL_INLINE_RE = re.compile(r"\S+@\S+\.\S+")
+# Targets all whitespace including newlines; distinct from
+# cleanup._MULTI_SPACE_RE which targets only spaces and tabs.
 _MULTI_SPACE_RE = re.compile(r"\s{2,}")
 _LEADING_TRAILING_COMMA_RE = re.compile(r"^[,\s]+|[,\s]+$")
 
@@ -366,13 +370,14 @@ def _extract_metadata(sections: list[Section]) -> tuple[dict, list[Section]]:
 
 
 def structure_sections(sections: list[Section],
-                       has_title: bool = False) -> tuple[dict, list[Section]]:
+                       has_title: bool = False,
+                       ) -> tuple[dict, list[Section], int]:
     """Apply heading intelligence, paragraph grouping, and list detection.
 
     If has_title is True, the title was already extracted from front matter
     and no title detection is performed.
 
-    Returns (metadata_dict, structured_sections).
+    Returns (metadata_dict, structured_sections, nesting_corrections).
     """
     metadata, sections = _extract_metadata(sections)
     body_size = _detect_body_size(sections)
@@ -443,8 +448,8 @@ def structure_sections(sections: list[Section],
     structured = [s for s in structured if _detect_lang_label(s) is None]
     structured = _classify_wording_sections(structured)
     _demote_repeated_low_confidence_numbers(structured)
-    _validate_nesting(structured)
-    return metadata, structured
+    nesting_corrections = _validate_nesting(structured)
+    return metadata, structured, nesting_corrections
 
 
 _BULLET_SPLIT_RE = re.compile(
@@ -892,7 +897,7 @@ def _demote_repeated_low_confidence_numbers(sections: list[Section]) -> None:
 _SIBLING_FONT_TOL = 0.1
 
 
-def _validate_nesting(sections: list[Section]) -> None:
+def _validate_nesting(sections: list[Section]) -> int:
     """Ensure heading levels don't skip more than one level deeper.
 
     Mutates headings that skip levels: adjusts heading_level and
@@ -903,9 +908,12 @@ def _validate_nesting(sections: list[Section]) -> None:
     level; without this check, a run of similar entries (e.g. a dozen
     "Changes since P0876RN" items) would each get prev_clamped + 1,
     cascading to ever-deeper levels.
+
+    Returns the number of corrections applied.
     """
     prev_level = 0
     prev_font_size: float | None = None
+    corrections = 0
     for sec in sections:
         if sec.kind != SectionKind.HEADING:
             continue
@@ -919,6 +927,7 @@ def _validate_nesting(sections: list[Section]) -> None:
             sec.heading_level = prev_level
             if sec.confidence == Confidence.HIGH:
                 sec.confidence = Confidence.MEDIUM
+            corrections += 1
         elif prev_level > 0 and sec.heading_level > prev_level + 1:
             corrected = prev_level + 1
             _log.info("Nesting fix: h%d -> h%d for %r",
@@ -927,5 +936,7 @@ def _validate_nesting(sections: list[Section]) -> None:
             sec.heading_level = corrected
             if sec.confidence == Confidence.HIGH:
                 sec.confidence = Confidence.MEDIUM
+            corrections += 1
         prev_level = sec.heading_level
         prev_font_size = sec.font_size
+    return corrections

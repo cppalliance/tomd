@@ -4,7 +4,7 @@ import logging
 
 from .. import format_front_matter
 from .cleanup import normalize_whitespace
-from .types import Line, Span, Section, SectionKind, Confidence, BULLET_CHARS
+from .types import Line, Span, Section, SectionKind, BULLET_CHARS
 
 _log = logging.getLogger(__name__)
 

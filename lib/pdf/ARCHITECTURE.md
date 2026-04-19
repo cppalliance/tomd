@@ -32,11 +32,13 @@ Enums:
 
 | Step | What | Module |
 |------|------|--------|
-| 1 | Dual extraction (MuPDF + spatial) + edge items + links | `extract.py`, `__init__.py` |
+| 1 | Dual extraction (MuPDF + spatial) + edge items + links + hidden scan + drawings | `extract.py`, `cleanup.py`, `wording.py`, `__init__.py` |
+| 1.5 | Slide-deck / standards-draft detection (geometry or page-count early exit) | `__init__.py` |
 | 2 | Close document | `__init__.py` |
 | 3 | Hidden block stripping + readability check | `cleanup.py`, `types.py` |
 | 4 | Header/footer detection and stripping | `cleanup.py` |
 | 5 | Monospace propagation (spatial -> MuPDF) | `mono.py` |
+| 5.5 | Wording detection (HSV color + drawing correlation) | `wording.py` |
 | 6 | Text cleanup (format chars, NBSP, dehyphenation, cross-page join) | `cleanup.py` |
 | 7 | Span normalization (style boundaries to word edges) | `spans.py` |
 | 8 | WG21 metadata extraction + table detection | `wg21.py`, `table.py` |
@@ -44,11 +46,18 @@ Enums:
 | 10 | Structure (headings, lists, paragraphs, code blocks, nesting) | `structure.py` |
 | 11 | TOC stripping | `toc.py` |
 | 12 | Emit Markdown + prompts file | `emit.py` |
-| 13 | Return results | `__init__.py` |
+| 13 | Return `PipelineResult` | `__init__.py` |
 
 ## Techniques by Layer
 
 ### Layer 1: Extraction (8 techniques)
+
+**T0. Document-type early exits**
+- `__init__.py:_is_slide_deck`, `__init__.py:_is_standards_draft`
+- Slide-deck detection: landscape (width > height) AND small (width < 600pt) on 80%+ of pages. Catches presentation PDFs whose navigation sidebars confuse the dual-path extractor.
+- Standards-draft detection: page count >= 200. Catches C++ standard drafts (2000+ pages) that are not technical papers.
+- Both return `PipelineResult` with `skipped=True`, empty markdown, and a prompts message identifying the document type.
+- Named constants: `_SLIDE_DECK_MAX_WIDTH`, `_SLIDE_DECK_LANDSCAPE_FRACTION`, `_STANDARDS_DRAFT_MIN_PAGES`
 
 **T1. MuPDF dict-path extraction**
 - `extract.py:extract_mupdf`
@@ -241,10 +250,11 @@ Enums:
 
 ### Layer 8: TOC Detection (1 technique)
 
-**T29. TOC detection with fuzzy matching**
+**T29. TOC detection with exact-match + fuzzy fallback**
 - `toc.py:find_toc_indices`
 - Normalizes entries: strips dot leaders, page numbers, section prefixes, collapses whitespace
-- Fuzzy matches against known headings using dual-algorithm OR-gate (SequenceMatcher >= 0.75 OR Jaccard >= 0.65)
+- Fast path: exact-match set lookup (`_exact_set`) against normalized headings. O(1) per section.
+- Fuzzy fallback: only when heading count is below `_MAX_FUZZY_HEADINGS` (200). Uses dual-algorithm OR-gate (SequenceMatcher >= 0.75 OR Jaccard >= 0.65). Without this guard, large documents (2000+ pages, 40k sections) hang on O(sections * headings) fuzzy comparisons.
 - Requires 3+ consecutive matches. Bridges gaps up to 3 non-matching entries.
 - Stops on duplicate first-line (second occurrence = real heading, not TOC entry)
 - Includes preceding "Table of Contents" / "Contents" label
@@ -296,21 +306,31 @@ Enums:
 - Metadata merging: `{**structure_metadata, **wg21_metadata}` - WG21 metadata takes precedence.
 - TOC heading collection: only HEADING sections used as the reference set for TOC matching.
 
+### Layer 11: Quality Assurance (1 technique)
+
+**T39. Markdown-only QA scoring**
+- `qa.py:compute_metrics`
+- Design constraint: takes ONLY a Markdown string. No page count, no file format, no pipeline internals. Every signal is derived from the text via mistune AST parsing. This keeps scoring format-agnostic and decoupled from the converter. Do not add parameters that leak converter state.
+- Signals: heading count, code block count, list/table count, front-matter field count, uncertain region markers (`<!-- tomd:uncertain -->`), unfenced code lines (C++ syntax patterns in paragraphs), paragraph count, structural variety
+- "Long document" threshold (`_LONG_DOC_PARAGRAPHS = 10`) gates penalties that only make sense for substantial documents (no-headings, low-variety)
+- `run_qa_report` handles batch execution with parallel workers and straggler timeout
+
 ## Module Map
 
 | Module | Responsibility | Public API | Lines |
 |--------|---------------|------------|------:|
-| `__init__.py` | Pipeline orchestration | `convert_pdf` | 169 |
-| `types.py` | Data model, enums, constants | Span, Line, Block, Section, SectionKind, Confidence, is_readable + shared constants | 233 |
-| `extract.py` | Dual-path text extraction | `extract_mupdf`, `extract_spatial`, `collect_links`, `attach_links` | 249 |
-| `mono.py` | Monospace font detection | `classify_monospace`, `propagate_monospace` | 181 |
-| `wording.py` | Wording section detection (ins/del) | `classify_wording`, `collect_line_drawings` | 222 |
-| `cleanup.py` | Text cleanup, header/footer, hidden regions | `detect_repeating`, `strip_repeating`, `dehyphenate`, `strip_format_chars`, `normalize_whitespace`, `find_hidden_regions`, `strip_hidden_blocks`, `cleanup_text` | 367 |
-| `spans.py` | Style boundary normalization | `normalize_spans` | 143 |
-| `table.py` | Two-signal table detection and exclusion | `detect_tables`, `exclude_table_regions` | ~200 |
-| `structure.py` | Comparison, heading/list/code classification | `compare_extractions`, `structure_sections` | 792 |
-| `emit.py` | Markdown and prompts generation | `emit_markdown`, `emit_prompts` | 381 |
-| `wg21.py` | WG21 metadata extraction | `extract_metadata_from_blocks` | 210 |
-| `similarity.py` | Fuzzy string comparison | `similar` | 66 |
-| `toc.py` | TOC detection and removal | `find_toc_indices` | 129 |
-| **Total** | | **21 public functions** | **3286** |
+| `__init__.py` | Pipeline orchestration, slide-deck detection | `convert_pdf`, `PipelineResult` | ~295 |
+| `types.py` | Data model, enums, constants | Span, Line, Block, Section, SectionKind, Confidence, is_readable + shared constants | ~252 |
+| `extract.py` | Dual-path text extraction | `extract_mupdf`, `extract_spatial`, `collect_links`, `attach_links` | ~249 |
+| `mono.py` | Monospace font detection | `classify_monospace`, `propagate_monospace` | ~222 |
+| `wording.py` | Wording section detection (ins/del) | `classify_wording`, `collect_line_drawings` | ~250 |
+| `cleanup.py` | Text cleanup, header/footer, hidden regions | `detect_repeating`, `strip_repeating`, `cleanup_text`, `find_hidden_regions`, `strip_hidden_blocks` | ~373 |
+| `spans.py` | Style boundary normalization | `normalize_spans` | ~149 |
+| `table.py` | Two-signal table detection and exclusion | `detect_tables`, `exclude_table_regions` | ~252 |
+| `structure.py` | Comparison, heading/list/code classification | `compare_extractions`, `structure_sections` | ~939 |
+| `emit.py` | Markdown and prompts generation | `emit_markdown`, `emit_prompts` | ~401 |
+| `wg21.py` | WG21 metadata extraction | `extract_metadata_from_blocks` | ~199 |
+| `qa.py` | Markdown QA scoring (mistune AST) | `compute_metrics`, `run_qa_report` | ~326 |
+| `similarity.py` | Fuzzy string comparison | `similar` | ~66 |
+| `toc.py` | TOC detection and removal | `find_toc_indices` | ~159 |
+| **Total** | | **24 public functions** | **~4132** |

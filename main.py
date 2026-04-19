@@ -39,6 +39,18 @@ def main():
     parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Enable debug logging")
+    parser.add_argument(
+        "--qa", action="store_true",
+        help="Run QA scoring instead of converting; prints a ranked report")
+    parser.add_argument(
+        "--qa-json",
+        help="Write per-file QA metrics as JSON to this path (implies --qa)")
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Parallel workers for --qa mode (default: 1)")
+    parser.add_argument(
+        "--timeout", type=int, default=120,
+        help="Seconds with no progress before aborting remaining files (default: 120)")
 
     args = parser.parse_args()
 
@@ -60,6 +72,18 @@ def main():
             input_files.append(pattern)
     input_files = list(dict.fromkeys(input_files))
     input_files = [Path(f) for f in input_files]
+
+    if args.qa or args.qa_json:
+        qa_files = [f for f in input_files
+                    if f.suffix.lower() in _PDF_EXTENSIONS | _HTML_EXTENSIONS]
+        if not qa_files:
+            print("No PDF/HTML files found for QA scoring.", file=sys.stderr)
+            sys.exit(1)
+        from .lib.pdf.qa import run_qa_report
+        json_path = Path(args.qa_json) if args.qa_json else None
+        run_qa_report(qa_files, json_path=json_path, workers=args.workers,
+                      timeout=args.timeout)
+        sys.exit(0)
 
     if args.output and len(input_files) > 1:
         parser.error("-o/--output cannot be used with multiple input files")

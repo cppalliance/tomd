@@ -4,7 +4,7 @@
 
 The HTML converter transforms WG21 HTML papers to Markdown via DOM traversal. Unlike the PDF converter (which uses dual-path extraction with confidence scoring), the HTML converter has a single source of truth - the DOM tree. There is no dual-path comparison, no uncertainty, and no spatial analysis. Semantic HTML tags map directly to Markdown elements.
 
-The converter handles five generator families (mpark/wg21, Bikeshed, hand-written, HackMD, unknown) with per-generator metadata extraction and boilerplate stripping. Problems (unrecognized generators, unconvertible structures) surface through the prompts file.
+The converter handles six generator families (mpark/wg21, Bikeshed, hand-written, HackMD, unknown) with per-generator metadata extraction and boilerplate stripping. Problems (unrecognized generators, unconvertible structures) surface through the prompts file.
 
 ## Pipeline (6 steps)
 
@@ -28,13 +28,14 @@ The converter handles five generator families (mpark/wg21, Bikeshed, hand-writte
 
 **T2. Generator fingerprinting**
 - `extract.py:detect_generator`
-- 6 detection strategies in priority order:
+- 7 detection strategies in priority order:
   1. `<meta name="generator" content="mpark/wg21">` -> `"mpark"`
   2. `<meta name="generator">` containing "bikeshed" -> `"bikeshed"`
   3. `<link href>` matching "hackmd" or `<title>` containing "hackmd" -> `"hackmd"`
-  4. `<header id="title-block-header">` present -> `"mpark"` (fallback)
-  5. `<address>` present -> `"hand-written"`
-  6. None of the above -> `"unknown"`
+  4. `div.wg21-head` present -> `"wg21"`
+  5. `<header id="title-block-header">` present -> `"mpark"` (fallback)
+  6. `<address>` present -> `"hand-written"`
+  7. None of the above -> `"unknown"`
 
 ### Layer 2: Metadata Extraction (5 techniques)
 
@@ -75,6 +76,7 @@ The converter handles five generator families (mpark/wg21, Bikeshed, hand-writte
   - mpark: removes `header#title-block-header`
   - Bikeshed: removes all `div[data-fill-with]`, `h1.p-name`, `h2#profile-and-date`
   - Hand-written: removes `<address>`, `table.header`
+  - wg21: removes `div.wg21-head`, `div.toc`
   - Unknown: appends problem description to prompts list
 - Returns `list[str]` of problems for the prompts file
 
@@ -142,12 +144,10 @@ The converter handles five generator families (mpark/wg21, Bikeshed, hand-writte
 - Title double-quoted. Reply-to as YAML list of double-quoted strings.
 - Extra keys appended after the standard order.
 
-**T18. ASCII encoding**
-- `lib/__init__.py:ascii_escape`
-- All non-ASCII characters encoded as HTML character references
-- Named entities for common diacritics (`&uuml;`, `&lstrok;`, etc.)
-- Numeric references (`&#NNN;`) for everything else
-- Shared with the PDF converter
+**T18. Output encoding**
+- `__init__.py:convert_html`
+- Output is UTF-8 Unicode — non-ASCII characters are emitted directly
+- `ascii_escape` in `lib/__init__.py` is kept for external use but is not called in the pipeline
 
 ## Module Map
 

@@ -1,10 +1,30 @@
-# HTML golden files
+# Golden files
 
-Expected outputs for [`test_html_golden.py`](../../test_html_golden.py). Inputs live under [`papers/`](../../../papers/) as `{stem}.html` (not copied into this folder).
+Expected outputs for [`test_html_golden.py`](../../test_html_golden.py) and
+[`test_pdf_golden.py`](../../test_pdf_golden.py).
 
-## Refreshing baselines
+HTML inputs live under [`papers/`](../../../papers/) as `{stem}.html` (not
+copied into this folder). PDF inputs are self-contained: `{stem}.pdf` files
+are committed directly in this folder alongside their `{stem}.golden.md`.
 
-From the `tomd/` directory (where `lib/` and `papers/` sit), after you intentionally change converter output:
+## PDF golden files
+
+Selected for structural diversity:
+
+| Paper | Features |
+|-------|----------|
+| p0533r9 | tables, code blocks, bold, italic |
+| p0957r8 | tables, 66 code blocks, 22 lists, uncertain regions |
+| p1068r11 | heavy wording (94 ins), lists, code |
+| p3556r0 | both ins and del wording, headings, code, links |
+| p1122r3 | list-heavy (29 lists), headings, code, links |
+| p2040r0 | balanced (code, lists, headings), full 5-field front matter |
+| p3714r0 | minimal paper (2 headings, 1 code block) |
+| p1112r4 | uncertain regions, lists, italic |
+
+## Refreshing HTML baselines
+
+From the `tomd/` directory, after intentionally changing HTML converter output:
 
 ```bash
 python -c "
@@ -25,4 +45,25 @@ for name in ['p3411r5.html', 'p2728r11.html', 'p3953r0.html', 'p4005r0.html',
 "
 ```
 
-Review diffs, then commit. Follow [wg21-papers `CLAUDE.md`](../../../../CLAUDE.md) and [`tomd/CLAUDE.md`](../../../CLAUDE.md).
+## Refreshing PDF baselines
+
+From the `tomd/` directory, after intentionally changing PDF converter output:
+
+```bash
+python -c "
+from pathlib import Path
+from lib.pdf import convert_pdf
+out = Path('tests/fixtures/golden')
+for stem in ['p0533r9', 'p0957r8', 'p1068r11', 'p3556r0',
+             'p1122r3', 'p2040r0', 'p3714r0', 'p1112r4']:
+    md, pr = convert_pdf(out / f'{stem}.pdf')
+    (out / f'{stem}.golden.md').write_text(md, encoding='utf-8', newline='\n')
+    ppath = out / f'{stem}.golden.prompts.md'
+    if pr:
+        ppath.write_text(pr, encoding='utf-8', newline='\n')
+    elif ppath.exists():
+        ppath.unlink()
+"
+```
+
+Review diffs, then commit.

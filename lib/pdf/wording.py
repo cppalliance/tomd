@@ -1,14 +1,14 @@
 """Wording section detection via multi-signal HSV color + drawing analysis.
 
 Detects ins/del markup in WG21 PDF papers by combining three signals:
-  1. Block-level color contamination filter - blocks containing non-green/
-     non-red chromatic colors (purple, orange, cyan) are syntax-highlighted
-     code and are skipped entirely.
-  2. Line-level colored fraction - only lines where the majority (>50%) of
-     non-link characters are green or red are treated as wording lines.
-     This rejects accent-color hyperlinks scattered through prose.
-  3. Span-level classification - green spans on wording lines become ins;
-     red spans with a confirmed strikethrough drawing become del.
+  1. Block-level color contamination filter - blocks containing non-wording
+     chromatic colors (purple, orange, cyan) are syntax-highlighted code
+     and are skipped entirely.
+  2. Line-level wording detection - lines where the majority of non-link
+     characters are green/red, or where green/red spans appear on an
+     otherwise-black line (partial-line wording pattern).
+  3. Span-level classification - green spans become ins; red spans with
+     a confirmed strikethrough drawing become del.
 
 Hyperlinks (span.link_url set) are excluded from all checks and fractions.
 Insertions require no drawing decoration. Deletions require a strikethrough
@@ -18,11 +18,15 @@ table borders and decorative rules.
 
 import colorsys
 import logging
-from collections import Counter
-
 from .types import Block
 
 _log = logging.getLogger(__name__)
+
+_HORIZ_LINE_Y_TOL = 1.0
+_HORIZ_LINE_MIN_WIDTH = 5.0
+_CONTEXT_LIGHTNESS_MIN = 0.25
+_CONTEXT_LIGHTNESS_MAX = 0.65
+_BLACK_LIGHTNESS_MAX = 0.15
 
 _SATURATION_THRESHOLD = 0.15
 _GREEN_HUE_MIN = 90
@@ -30,7 +34,6 @@ _GREEN_HUE_MAX = 180
 _RED_HUE_WRAP = 30
 _BLUE_HUE_MIN = 210
 _BLUE_HUE_MAX = 270
-_UNDERLINE_Y_TOLERANCE = 1.5
 _STRIKETHROUGH_Y_TOLERANCE = 2.0
 _STRIKETHROUGH_OVERLAP_MIN = 0.3
 _WORDING_LINE_MAJORITY = 0.5
@@ -47,25 +50,54 @@ def _color_int_to_rgb(color_int: int) -> tuple[float, float, float]:
     return (r, g, b)
 
 
-def _rgb_to_hue_sat(r: float, g: float, b: float) -> tuple[float, float]:
-    """Convert RGB (0-1) to hue (0-360 degrees) and saturation (0-1)."""
+def _hsv(color_int: int) -> tuple[float, float, float]:
+    """Convert MuPDF integer color to (hue 0-360, saturation 0-1, value 0-1)."""
+    r, g, b = _color_int_to_rgb(color_int)
     h, s, v = colorsys.rgb_to_hsv(r, g, b)
-    return h * 360.0, s
+    return h * 360.0, s, v
 
 
-def _is_chromatic(s: float) -> bool:
+def is_green_ins(color_int: int) -> bool:
+    """True if color is in the green hue range with sufficient saturation."""
+    h, s, _ = _hsv(color_int)
+    return s >= _SATURATION_THRESHOLD and _GREEN_HUE_MIN <= h <= _GREEN_HUE_MAX
+
+
+def is_red_del(color_int: int) -> bool:
+    """True if color is in the red hue range with sufficient saturation."""
+    h, s, _ = _hsv(color_int)
+    return s >= _SATURATION_THRESHOLD and (h <= _RED_HUE_WRAP or h >= 360 - _RED_HUE_WRAP)
+
+
+def _is_blue_link(color_int: int) -> bool:
+    """True if color is in the blue hue range (hyperlink)."""
+    h, s, _ = _hsv(color_int)
+    return s >= _SATURATION_THRESHOLD and _BLUE_HUE_MIN <= h <= _BLUE_HUE_MAX
+
+
+def _is_chromatic(color_int: int) -> bool:
+    """True if color has enough saturation to be a chromatic signal."""
+    _, s, _ = _hsv(color_int)
     return s >= _SATURATION_THRESHOLD
 
 
-def _classify_hue(h: float) -> str | None:
-    """Map hue angle to candidate neighborhood, or None for other hues."""
-    if _GREEN_HUE_MIN <= h <= _GREEN_HUE_MAX:
-        return "green"
-    if h <= _RED_HUE_WRAP or h >= (360 - _RED_HUE_WRAP):
-        return "red"
-    if _BLUE_HUE_MIN <= h <= _BLUE_HUE_MAX:
-        return "blue"
-    return None
+def _is_black(color_int: int) -> bool:
+    """True if color is achromatic and dark (near-black)."""
+    r, g, b = _color_int_to_rgb(color_int)
+    lightness = (r + g + b) / 3.0
+    return lightness <= _BLACK_LIGHTNESS_MAX
+
+
+def _is_wording_color(color_int: int) -> bool:
+    """True if color is green (ins) or red (del)."""
+    return is_green_ins(color_int) or is_red_del(color_int)
+
+
+def _is_foreign_chromatic(color_int: int) -> bool:
+    """True if color is chromatic but not green, red, or blue."""
+    if not _is_chromatic(color_int):
+        return False
+    return not (_is_wording_color(color_int) or _is_blue_link(color_int))
 
 
 def _match_strikethrough(span_bbox, drawings: list) -> bool:
@@ -89,32 +121,22 @@ def _match_strikethrough(span_bbox, drawings: list) -> bool:
 
 
 def _block_has_foreign_colors(block: Block) -> bool:
-    """True if the block contains non-green/red/blue chromatic spans.
+    """True if the block contains chromatic colors outside green/red/blue.
 
-    Indicates syntax-highlighted code where accent colors (purple, orange,
-    cyan) appear alongside green/red. Hyperlink spans are excluded since
-    blue links are expected in wording sections. Returns False for blocks
-    that contain only black, green, red, and blue (hyperlink) text.
+    Indicates syntax-highlighted code. Hyperlink spans are excluded.
     """
     for line in block.lines:
         for span in line.spans:
-            if span.link_url:
+            if span.link_url or not span.text.strip():
                 continue
-            if not span.text.strip():
-                continue
-            h, s = _rgb_to_hue_sat(*_color_int_to_rgb(span.color))
-            if _is_chromatic(s) and _classify_hue(h) is None:
+            if _is_foreign_chromatic(span.color):
                 return True
     return False
 
 
-def _line_colored_fraction(line) -> float:
-    """Fraction of non-link non-whitespace characters that are green or red.
-
-    Hyperlink spans are excluded from both numerator and denominator so
-    that a line full of red hyperlinks doesn't appear to be wording markup.
-    """
-    total = green = red = 0
+def _line_wording_fraction(line) -> float:
+    """Fraction of non-link non-whitespace characters that are green or red."""
+    total = colored = 0
     for span in line.spans:
         if span.link_url:
             continue
@@ -122,28 +144,32 @@ def _line_colored_fraction(line) -> float:
         if n == 0:
             continue
         total += n
-        h, s = _rgb_to_hue_sat(*_color_int_to_rgb(span.color))
-        if _is_chromatic(s):
-            hue = _classify_hue(h)
-            if hue == "green":
-                green += n
-            elif hue == "red":
-                red += n
-    return (green + red) / total if total else 0.0
+        if _is_wording_color(span.color):
+            colored += n
+    return colored / total if total else 0.0
 
 
-def _build_body_color(blocks: list[Block]) -> tuple[float, float, float]:
-    """Identify the dominant body text color."""
-    color_counts: Counter[int] = Counter()
-    for b in blocks:
-        for ln in b.lines:
-            for s in ln.spans:
-                if s.text.strip():
-                    color_counts[s.color] += len(s.text)
-    if not color_counts:
-        return (0.0, 0.0, 0.0)
-    dominant = color_counts.most_common(1)[0][0]
-    return _color_int_to_rgb(dominant)
+def _line_has_wording_on_black(line) -> bool:
+    """True if a line has green/red spans with the rest being black.
+
+    Catches partial-line wording where only the new keyword is colored
+    (e.g. green `constexpr` prepended to a black function declaration).
+    Returns False if any non-link span is a foreign chromatic color or
+    a non-black achromatic color.
+    """
+    has_colored = False
+    for span in line.spans:
+        if span.link_url or not span.text.strip():
+            continue
+        if _is_wording_color(span.color):
+            has_colored = True
+        elif _is_blue_link(span.color):
+            continue
+        elif _is_chromatic(span.color):
+            return False
+        elif not _is_black(span.color):
+            return False
+    return has_colored
 
 
 def collect_line_drawings(page) -> list[tuple[float, float, float, tuple]]:
@@ -163,14 +189,13 @@ def collect_line_drawings(page) -> list[tuple[float, float, float, tuple]]:
                     continue
                 p1 = item[1]
                 p2 = item[2]
-                if abs(p1.y - p2.y) < 1.0:
+                if abs(p1.y - p2.y) < _HORIZ_LINE_Y_TOL:
                     y = (p1.y + p2.y) / 2.0
                     x0 = min(p1.x, p2.x)
                     x1 = max(p1.x, p2.x)
-                    if x1 - x0 > 5.0:
+                    if x1 - x0 > _HORIZ_LINE_MIN_WIDTH:
                         lines.append((y, x0, x1, tuple(color)))
     except Exception:
-        # MuPDF can raise various internal errors from get_drawings()
         _log.debug("get_drawings() failed", exc_info=True)
     return lines
 
@@ -181,15 +206,15 @@ def classify_wording(blocks: list[Block],
 
     Three-layer filter:
       1. Blocks with foreign chromatic colors (not green/red/blue) are
-         skipped - they are syntax-highlighted code, not wording markup.
-      2. Only lines where >50% of non-link characters are green or red
-         are classified - this rejects accent-color hyperlinks in prose.
-      3. Green spans on majority lines become ins (no drawing required).
-         Red spans on majority lines become del only with a confirmed
-         strikethrough drawing (requires 30% span overlap to reject borders).
+         skipped — they are syntax-highlighted code, not wording markup.
+      2. Lines qualify if either the majority (>50%) of non-link characters
+         are green/red, or if any green/red spans appear with the remaining
+         text being black (partial-line wording pattern).
+      3. Green spans on qualifying lines become ins (no drawing required).
+         Red spans become del only with a confirmed strikethrough drawing.
 
     Sets span.wording_role on matching spans.
-    Returns a list of problem descriptions for the prompts file.
+    Returns an empty list (reserved for future diagnostic messages).
     """
     candidates: list[tuple] = []
 
@@ -200,36 +225,25 @@ def classify_wording(blocks: list[Block],
         drawings = page_drawings.get(block.page_num, [])
 
         for line in block.lines:
-            if _line_colored_fraction(line) <= _WORDING_LINE_MAJORITY:
+            is_majority = _line_wording_fraction(line) > _WORDING_LINE_MAJORITY
+            is_partial = not is_majority and _line_has_wording_on_black(line)
+            if not is_majority and not is_partial:
                 continue
 
             for span in line.spans:
-                if not span.text.strip():
-                    continue
-                if span.link_url:
+                if not span.text.strip() or span.link_url:
                     continue
 
-                rgb = _color_int_to_rgb(span.color)
-                h, s = _rgb_to_hue_sat(*rgb)
-
-                if not _is_chromatic(s):
-                    # Non-chromatic span on a wording-majority line = context
-                    if span.color != 0:
-                        r, g, b = rgb
-                        lightness = (r + g + b) / 3.0
-                        if 0.25 < lightness < 0.65:
-                            candidates.append((span, "context", "high"))
-                    continue
-
-                hue_class = _classify_hue(h)
-                if hue_class == "blue":
-                    continue
-
-                if hue_class == "green":
-                    candidates.append((span, "ins", "high"))
-                elif hue_class == "red":
+                if is_green_ins(span.color):
+                    candidates.append((span, "ins"))
+                elif is_red_del(span.color):
                     if _match_strikethrough(span.bbox, drawings):
-                        candidates.append((span, "del", "high"))
+                        candidates.append((span, "del"))
+                elif not _is_chromatic(span.color) and span.color != 0:
+                    r, g, b = _color_int_to_rgb(span.color)
+                    lightness = (r + g + b) / 3.0
+                    if _CONTEXT_LIGHTNESS_MIN < lightness < _CONTEXT_LIGHTNESS_MAX:
+                        candidates.append((span, "context"))
 
     ins_del = [c for c in candidates if c[1] in ("ins", "del")]
     if len(ins_del) < _MIN_WORDING_SPANS:
@@ -237,12 +251,12 @@ def classify_wording(blocks: list[Block],
                     len(ins_del), _MIN_WORDING_SPANS)
         return []
 
-    for span, role, _confidence in candidates:
+    for span, role in candidates:
         span.wording_role = role
 
-    ins_count = sum(1 for _, r, _ in candidates if r == "ins")
-    del_count = sum(1 for _, r, _ in candidates if r == "del")
-    ctx_count = sum(1 for _, r, _ in candidates if r == "context")
+    ins_count = sum(1 for _, r in candidates if r == "ins")
+    del_count = sum(1 for _, r in candidates if r == "del")
+    ctx_count = sum(1 for _, r in candidates if r == "context")
     _log.info("Wording detected: %d ins, %d del, %d context",
                ins_count, del_count, ctx_count)
 

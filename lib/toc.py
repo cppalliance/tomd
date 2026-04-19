@@ -24,6 +24,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 _MIN_TOC_RUN = 3
 _MAX_GAP = 3
+_MAX_FUZZY_HEADINGS = 200
 
 
 def _first_line(text: str) -> str:
@@ -78,9 +79,18 @@ def find_toc_indices(
     norm_headings = {_normalize_toc_entry(h) for h in headings}
     norm_headings.discard("")
 
+    # Fast exact-match set covers the common case; fuzzy matching only
+    # runs on the residual. Without this, O(sections * headings) calls
+    # to similar() make large documents (2000+ pages) hang.
+    _exact_set = frozenset(norm_headings)
+
     def _matches_heading(text: str) -> bool:
         norm = _normalize_toc_entry(text)
         if not norm:
+            return False
+        if norm in _exact_set:
+            return True
+        if len(norm_headings) > _MAX_FUZZY_HEADINGS:
             return False
         for h in norm_headings:
             if similar(norm, h):

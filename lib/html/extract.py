@@ -5,9 +5,12 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from .. import EMAIL_RE, DATE_RE, DOC_NUM_RE, parse_author_lines
+from .. import DATE_RE, DOC_NUM_RE, parse_author_lines
 
 _log = logging.getLogger(__name__)
+
+_HACKMD_RE = re.compile(r"hackmd")
+_COMMA_COLLAPSE_RE = re.compile(r"(,\s*){2,}")
 
 
 def parse_html(text: str) -> BeautifulSoup:
@@ -18,7 +21,7 @@ def parse_html(text: str) -> BeautifulSoup:
 def detect_generator(soup: BeautifulSoup) -> str:
     """Identify which tool generated this HTML paper.
 
-    Returns one of: "mpark", "bikeshed", "hackmd", "hand-written", "unknown".
+    Returns one of: "mpark", "bikeshed", "hackmd", "wg21", "hand-written", "unknown".
     Checks meta generator tag first, then structural heuristics.
     """
     for meta in soup.find_all("meta"):
@@ -29,7 +32,7 @@ def detect_generator(soup: BeautifulSoup) -> str:
                 return "mpark"
             if "bikeshed" in content.lower():
                 return "bikeshed"
-    if soup.find("link", href=re.compile(r"hackmd")):
+    if soup.find("link", href=_HACKMD_RE):
         return "hackmd"
     title_tag = soup.find("title")
     if title_tag and "hackmd" in title_tag.get_text().lower():
@@ -123,7 +126,7 @@ def _get_text_br_separated(cell: Tag) -> str:
     for br in cell.find_all("br"):
         br.replace_with(", ")
     text = cell.get_text(strip=True)
-    text = re.sub(r"(,\s*){2,}", ", ", text)
+    text = _COMMA_COLLAPSE_RE.sub(", ", text)
     return text.strip(", ")
 
 

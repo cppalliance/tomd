@@ -157,7 +157,7 @@ class TestParagraphMerging:
             make_section("Some text without terminal"),
             make_section("continuation here"),
         ]
-        _, result = structure_sections(sections, has_title=True)
+        _, result, _ = structure_sections(sections, has_title=True)
         paragraphs = [s for s in result if s.kind == SectionKind.PARAGRAPH]
         assert len(paragraphs) == 1
         assert "continuation" in paragraphs[0].text
@@ -167,7 +167,7 @@ class TestParagraphMerging:
             make_section("Some text with terminal."),
             make_section("Next paragraph."),
         ]
-        _, result = structure_sections(sections, has_title=True)
+        _, result, _ = structure_sections(sections, has_title=True)
         paragraphs = [s for s in result if s.kind == SectionKind.PARAGRAPH]
         assert len(paragraphs) == 2
 
@@ -186,7 +186,7 @@ class TestBodySizeDetection:
             make_section("more body text", font_size=10.0),
             make_section("A Heading", font_size=14.0),
         ]
-        _, result = structure_sections(sections, has_title=True)
+        _, result, _ = structure_sections(sections, has_title=True)
         headings = [s for s in result if s.kind == SectionKind.HEADING]
         assert len(headings) >= 1
 
@@ -196,7 +196,7 @@ class TestBodySizeDetection:
             make_section("more body text", font_size=10.0),
             make_section("still body text", font_size=10.0),
         ]
-        _, result = structure_sections(sections, has_title=True)
+        _, result, _ = structure_sections(sections, has_title=True)
         headings = [s for s in result if s.kind == SectionKind.HEADING]
         assert len(headings) == 0
 
@@ -208,14 +208,14 @@ class TestExtractMetadataKey:
             make_section("Document Number: P1234R0"),
             make_section("Some body text here."),
         ]
-        meta, _ = structure_sections(sections, has_title=True)
+        meta, _, _ = structure_sections(sections, has_title=True)
         assert "document" in meta or meta == {}
         assert "doc-number" not in meta
 
     def test_document_key_not_doc_number(self):
         """The merged front matter must never contain the legacy doc-number key."""
         sec = make_section("Document Number: P9999R2")
-        meta, _ = structure_sections([sec], has_title=True)
+        meta, _, _ = structure_sections([sec], has_title=True)
         assert "doc-number" not in meta
 
 
@@ -263,7 +263,7 @@ class TestCodeBlockUncertainMerge:
         mid.confidence = Confidence.UNCERTAIN
         bot = self._mono_section("}")
 
-        _, sections = structure_sections([top, mid, bot], has_title=False)
+        _, sections, _ = structure_sections([top, mid, bot], has_title=False)
         code = [s for s in sections if s.kind == SectionKind.CODE]
         assert len(code) == 1, "expected one merged code block"
         assert "void f()" in code[0].text
@@ -279,7 +279,7 @@ class TestCodeBlockUncertainMerge:
                       confidence=Confidence.UNCERTAIN)
         bot = self._mono_section("}")
 
-        _, sections = structure_sections([top, mid, bot], has_title=False)
+        _, sections, _ = structure_sections([top, mid, bot], has_title=False)
         code = [s for s in sections if s.kind == SectionKind.CODE]
         assert len(code) == 2, "mixed uncertain should not be absorbed"
 
@@ -359,7 +359,7 @@ class TestHeadingProseLengthRejection:
         # agrees that 10.0 is body and no font-level signal fires.
         body_fill = [_mk_section("ordinary body " + ("x" * 80), font_size=10.0)
                      for _ in range(10)]
-        _, result = structure_sections(body_fill + [sec], has_title=True)
+        _, result, _ = structure_sections(body_fill + [sec], has_title=True)
         demoted = [s for s in result if long_line in s.text]
         assert demoted, "expected the long numbered line to appear in output"
         assert all(s.kind != SectionKind.HEADING for s in demoted), (
@@ -373,7 +373,7 @@ class TestHeadingProseLengthRejection:
         heading = _mk_section(long_title, font_size=14.0)
         body_fill = [_mk_section("plain body " + ("x" * 80), font_size=10.0)
                      for _ in range(10)]
-        _, result = structure_sections(body_fill + [heading], has_title=True)
+        _, result, _ = structure_sections(body_fill + [heading], has_title=True)
         matches = [s for s in result if long_title in s.text]
         assert matches and any(s.kind == SectionKind.HEADING for s in matches), (
             "long numbered line at heading font size must stay a HEADING "

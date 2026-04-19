@@ -17,8 +17,8 @@ pip install -e .
 ```
 
 Requires Python 3.12 or newer. Runtime dependencies (`pymupdf~=1.27`,
-`beautifulsoup4~=4.14`) are declared in `pyproject.toml` and installed
-automatically.
+`beautifulsoup4~=4.14`, `mistune~=3.2`) are declared in `pyproject.toml`
+and installed automatically.
 
 ## Usage
 
@@ -31,6 +31,22 @@ tomd -o out.md paper.pdf        # explicit output path (single-file only)
 ```
 
 Also runnable as `python -m tomd.main ...`.
+
+### QA mode
+
+Score conversion quality across a batch of PDFs without inspecting each
+output by hand:
+
+```
+tomd --qa *.pdf *.html                         # ranked report to stdout
+tomd --qa --workers 16 *.pdf *.html            # parallel (16 processes)
+tomd --qa --qa-json report.json *.pdf *.html   # + detailed per-file JSON
+tomd --qa --workers 16 --timeout 180 *.pdf     # abort stragglers after 3m
+```
+
+Each file is converted and then scored by parsing the Markdown output with
+mistune. The score (0-100) reflects heading structure, code block detection,
+front-matter completeness, uncertain regions, and unfenced code.
 
 ### Output
 
@@ -62,12 +78,18 @@ structure, never content.
 - **No OCR.** Scanned or image-only PDFs are not supported.
 - **No vision fallback.** Papers that rely on non-extractable layout
   (complex equations, diagrams) will not convert cleanly.
-- **HTML generator coverage.** Four generators are detected directly:
-  mpark/wg21, Bikeshed, HackMD, and hand-written. Other sources fall back
-  to a generic extractor that may miss metadata fields.
+- **HTML generator coverage.** Five generators are detected directly:
+  mpark/wg21, Bikeshed, HackMD, wg21 cow-tool, and hand-written. Other
+  sources fall back to a generic extractor that may miss metadata fields.
 - **LLM auto-resolution is deferred to v2.** The `.prompts.md` file is
   produced; feeding it to an LLM and applying the result is manual in this
   release.
+- **Slide decks are detected and skipped.** Presentation-style PDFs
+  (landscape pages smaller than standard paper) produce an empty `.md`
+  and a `.prompts.md` noting the slide-deck detection.
+- **Standards drafts (>= 200 pages) are detected and skipped.** These are
+  C++ standard documents, not technical papers. They produce an empty `.md`
+  and a `.prompts.md` noting the detection.
 
 ## Design
 

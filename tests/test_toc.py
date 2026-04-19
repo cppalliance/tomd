@@ -161,3 +161,26 @@ class TestStructuralTocHints:
         assert hints[0] is True
         assert hints[1] is True
         assert hints[2] is False
+
+
+def test_exact_match_skips_fuzzy_on_large_heading_set():
+    """When headings exceed _MAX_FUZZY_HEADINGS, only exact matches are used."""
+    headings = {f"Section {i}" for i in range(300)}
+    texts = ["Section 0", "Section 1", "Section 2", "Section 3",
+             "Body paragraph", "Section 5"]
+    result = find_toc_indices(texts, headings)
+    assert 0 in result
+    assert 1 in result
+    assert 2 in result
+    assert 3 in result
+
+
+def test_large_toc_completes_quickly():
+    """Performance guard: 1000 sections x 500 headings must finish in < 2s."""
+    import time
+    headings = {f"Heading {i}" for i in range(500)}
+    texts = [f"Heading {i % 500}" for i in range(1000)]
+    t0 = time.monotonic()
+    find_toc_indices(texts, headings)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0, f"TOC detection took {elapsed:.1f}s, expected < 2s"

@@ -7,6 +7,9 @@ from bs4 import BeautifulSoup, Comment, Tag, NavigableString
 
 from .. import strip_format_chars, SECTION_NUM_PREFIX_RE, ALLOWED_LINK_SCHEMES
 
+_BOLD_WRAP_RE = re.compile(r"^\*\*(.+)\*\*$")
+_COLLAPSE_WS_RE = re.compile(r"\s+")
+
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _LIST_CONTAINER_TAGS = frozenset({"ul", "ol"})
 
@@ -49,7 +52,7 @@ def _render_element(el: Tag, generator: str) -> str | None:
         return _render_heading(el)
 
     if tag == "p":
-        return _render_paragraph(el, generator)
+        return _render_paragraph(el)
 
     if tag == "pre":
         return _render_pre(el, generator)
@@ -107,11 +110,11 @@ def _render_heading(el: Tag) -> str | None:
     if not text:
         return None
     text = SECTION_NUM_PREFIX_RE.sub("", text)
-    text = re.sub(r"^\*\*(.+)\*\*$", r"\1", text)
+    text = _BOLD_WRAP_RE.sub(r"\1", text)
     return f"{'#' * level} {text}"
 
 
-def _render_paragraph(el: Tag, generator: str) -> str | None:
+def _render_paragraph(el: Tag) -> str | None:
     """Render a paragraph to a single unwrapped line."""
     text = _collapse_whitespace(_inline_text(el))
     return text if text else None
@@ -120,7 +123,7 @@ def _render_paragraph(el: Tag, generator: str) -> str | None:
 def _collapse_whitespace(text: str) -> str:
     """Collapse runs of whitespace to single spaces, strip format chars."""
     text = strip_format_chars(text)
-    return re.sub(r"\s+", " ", text).strip()
+    return _COLLAPSE_WS_RE.sub(" ", text).strip()
 
 
 def _render_pre(el: Tag, generator: str) -> str:
