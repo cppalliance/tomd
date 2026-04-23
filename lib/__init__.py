@@ -57,15 +57,16 @@ FRONT_MATTER_ORDER = ("title", "document", "date", "intent", "audience", "reply-
 
 _INTENT_MAP = {
     "informational": "info",
-    "direction": "ask",
-    "ask": "ask",
-    "request": "ask",
-    "poll": "ask",
 }
 
 
 def normalize_intent(raw: str) -> str:
-    """Normalize a WG21 paper type/intent value to its canonical short form."""
+    """Normalize a WG21 paper type/intent value to its canonical short form.
+
+    Only the well-known "informational" -> "info" shortening is applied;
+    all other values pass through lowercased so source intents like
+    direction, poll, and request are preserved rather than collapsed.
+    """
     return _INTENT_MAP.get(raw.strip().lower(), raw.strip().lower())
 
 
