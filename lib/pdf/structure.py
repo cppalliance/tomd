@@ -6,12 +6,12 @@ import unicodedata
 from collections import Counter
 from dataclasses import replace
 
-from .. import DATE_RE, strip_format_chars
+from .. import DATE_RE, normalize_intent, strip_format_chars
 from .types import (
     Block, Line, Span, Section, SectionKind, Confidence,
     SIMILARITY_THRESHOLD, TERMINAL_PUNCTUATION, FALLBACK_BODY_SIZE,
     MIN_UNCERTAIN_WORDS,
-    SECTION_NUM_RE, DOC_FIELD_RE, REPLY_TO_RE, AUDIENCE_RE,
+    SECTION_NUM_RE, DOC_FIELD_RE, REPLY_TO_RE, AUDIENCE_RE, TYPE_RE,
     BULLET_RE, NUMBERED_LIST_RE, KNOWN_SECTIONS, BULLET_CHARS,
 )
 
@@ -340,6 +340,12 @@ def _extract_metadata(sections: list[Section]) -> tuple[dict, list[Section]]:
                     consumed = True
                     continue
 
+                m = TYPE_RE.match(lt)
+                if m:
+                    meta["intent"] = normalize_intent(m.group(1))
+                    consumed = True
+                    continue
+
             if consumed:
                 leftover = []
                 for line_text in text.split("\n"):
@@ -347,7 +353,7 @@ def _extract_metadata(sections: list[Section]) -> tuple[dict, list[Section]]:
                     if not lt:
                         continue
                     if (DOC_FIELD_RE.match(lt) or REPLY_TO_RE.match(lt)
-                            or AUDIENCE_RE.match(lt)):
+                            or AUDIENCE_RE.match(lt) or TYPE_RE.match(lt)):
                         continue
                     if lt.lower().startswith("date") and DATE_RE.search(lt):
                         continue

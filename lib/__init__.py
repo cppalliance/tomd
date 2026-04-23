@@ -53,12 +53,28 @@ def strip_format_chars(text: str) -> str:
     return "".join(c for c in text if c not in FORMAT_CHARS)
 
 
-FRONT_MATTER_ORDER = ("title", "document", "date", "audience", "reply-to")
+FRONT_MATTER_ORDER = ("title", "document", "date", "intent", "audience", "reply-to")
+
+_INTENT_MAP = {
+    "informational": "info",
+    "direction": "ask",
+    "ask": "ask",
+    "request": "ask",
+    "poll": "ask",
+}
+
+
+def normalize_intent(raw: str) -> str:
+    """Normalize a WG21 paper type/intent value to its canonical short form."""
+    return _INTENT_MAP.get(raw.strip().lower(), raw.strip().lower())
 
 
 def _yaml_escape(s: str) -> str:
     """Escape a string for safe inclusion in double-quoted YAML."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+_ALWAYS_QUOTED_KEYS = frozenset({"title"})
 
 
 def _yaml_value(key: str, val) -> str:
@@ -67,7 +83,7 @@ def _yaml_value(key: str, val) -> str:
         items = [f'  - "{_yaml_escape(str(v))}"' for v in val]
         return f"{key}:\n" + "\n".join(items)
     val = str(val) if not isinstance(val, str) else val
-    if any(c in val for c in ':{}[]#&*?|>!%@`"\'\n\\'):
+    if key in _ALWAYS_QUOTED_KEYS or any(c in val for c in ':{}[]#&*?|>!%@`"\'\n\\'):
         return f'{key}: "{_yaml_escape(val)}"'
     return f"{key}: {val}"
 
@@ -75,10 +91,10 @@ def _yaml_value(key: str, val) -> str:
 def format_front_matter(metadata: dict) -> str:
     """Format metadata dict as YAML front matter.
 
-    Field order: title, document, date, audience, reply-to.
-    Title and values containing YAML-special characters are double-quoted
-    with backslash-escaping for embedded quotes, backslashes, and newlines.
-    Reply-to is a YAML list of double-quoted strings.
+    Field order: title, document, date, intent, audience, reply-to.
+    Title is always double-quoted. Values containing YAML-special characters
+    are double-quoted with backslash-escaping for embedded quotes, backslashes,
+    and newlines. Reply-to is a YAML list of double-quoted strings.
     Returns empty string if metadata is empty.
     """
     if not metadata:

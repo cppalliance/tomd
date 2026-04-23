@@ -161,6 +161,11 @@ AUDIENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+TYPE_RE = re.compile(
+    r"(?:Type|Intent|Paper\s+Type)[:\s]+(.+)",
+    re.IGNORECASE,
+)
+
 PAGE_NUM_RE = re.compile(
     r"^\d+$"
     r"|^[Pp]age\s+\d+"

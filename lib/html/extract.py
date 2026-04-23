@@ -5,7 +5,7 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from .. import DATE_RE, DOC_NUM_RE, parse_author_lines
+from .. import DATE_RE, DOC_NUM_RE, normalize_intent, parse_author_lines
 
 _log = logging.getLogger(__name__)
 
@@ -105,6 +105,9 @@ def _extract_mpark_metadata(soup: BeautifulSoup) -> dict:
         elif label == "audience":
             metadata["audience"] = _get_text_br_separated(value_cell)
 
+        elif label in ("type", "paper type", "intent", "status"):
+            metadata["intent"] = normalize_intent(value_cell.get_text(strip=True))
+
         elif "reply" in label:
             authors = _parse_mpark_authors(value_cell)
             if authors:
@@ -191,6 +194,8 @@ def _extract_bikeshed_metadata(soup: BeautifulSoup) -> dict:
                 text = child.get_text(strip=True)
                 if "audience" in current_label:
                     metadata["audience"] = _get_text_br_separated(child)
+                elif current_label in ("type", "paper type", "intent", "status"):
+                    metadata["intent"] = normalize_intent(text)
                 elif "editor" in current_label or "author" in current_label:
                     email_link = child.find("a", class_="email")
                     if email_link:
@@ -255,6 +260,8 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
                         metadata["date"] = m.group(0)
                 elif "audience" in label:
                     metadata["audience"] = _get_text_br_separated(td)
+                elif label in ("type", "paper type", "intent", "status"):
+                    metadata["intent"] = normalize_intent(value)
                 elif "reply" in label:
                     a_tag = td.find("a")
                     if a_tag:
@@ -275,6 +282,7 @@ _FIELD_SYNONYMS: dict[str, frozenset[str]] = {
         "document number", "document no", "doc no", "doc. no.", "doc", "number",
     }),
     "date":     frozenset({"date", "revision date"}),
+    "intent":   frozenset({"type", "paper type", "intent", "status"}),
     "audience": frozenset({"audience", "subgroup"}),
     "reply-to": frozenset({"reply to", "reply-to", "author", "authors", "editor", "editors"}),
 }
@@ -324,6 +332,8 @@ def _extract_wg21_metadata(soup: BeautifulSoup) -> dict:
             authors = parse_author_lines([value])
             if authors:
                 metadata["reply-to"] = authors
+        elif field == "intent":
+            metadata["intent"] = normalize_intent(value)
         else:
             metadata[field] = value
     return metadata
